@@ -28,6 +28,27 @@ static int loop;       /* current loop level */
 static uint stmov;     /* stats: added moves */
 static uint stblk;     /* stats: added blocks */
 
+static int
+pickreg(RMap *m, bits regs, int r0, int r1)
+{
+	int c[Tmp0];
+	int n, r;
+
+	n = 0;
+	for (r=r0; r<r1; r++)
+		if (!(regs & BIT(r)))
+			c[n++] = r;
+	if (n != 0)
+		return c[divpick(n)];
+	n = 0;
+	for (r=r0; r<r1; r++)
+		if (!bshas(m->b, r))
+			c[n++] = r;
+	if (n != 0)
+		return c[divpick(n)];
+	die("no more regs");
+}
+
 static int *
 hint(int t)
 {
@@ -130,15 +151,8 @@ ralloctry(RMap *m, int t, int try)
 			r0 = T.fpr0;
 			r1 = r0 + T.nfpr;
 		}
-		for (r=r0; r<r1; r++)
-			if (!(regs & BIT(r)))
-				goto Found;
-		for (r=r0; r<r1; r++)
-			if (!bshas(m->b, r))
-				goto Found;
-		die("no more regs");
+		r = pickreg(m, regs, r0, r1);
 	}
-Found:
 	radd(m, t, r);
 	sethint(t, r);
 	tmp[t].visit = r;

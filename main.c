@@ -117,14 +117,53 @@ int
 main(int ac, char *av[])
 {
 	Target **t;
+	static struct option lopt[] = {
+		{ "diversify", no_argument, 0, 1000 },
+		{ "no-diversify", no_argument, 0, 1001 },
+		{ "div-seed", required_argument, 0, 1002 },
+		{ "div-nop", required_argument, 0, 1003 },
+		{ "div-regrand", no_argument, 0, 1004 },
+		{ 0, 0, 0, 0 },
+	};
 	FILE *inf, *hf;
 	char *f, *sep;
 	int c;
+	char *end;
+	unsigned long long u;
 
 	T = Deftgt;
 	outf = stdout;
-	while ((c = getopt(ac, av, "hd:o:t:")) != -1)
+	while ((c = getopt_long(ac, av, "hd:o:t:", lopt, 0)) != -1)
 		switch (c) {
+		case 1000:
+			divstate.enabled = 1;
+			break;
+		case 1001:
+			divstate.enabled = 0;
+			break;
+		case 1002:
+			u = strtoull(optarg, &end, 0);
+			if (*end != 0) {
+				fprintf(stderr, "invalid diversity seed '%s'\n", optarg);
+				exit(1);
+			}
+			divstate.seed = u;
+			divstate.enabled = 1;
+			break;
+		case 1003:
+			u = strtoull(optarg, &end, 0);
+			if (*end != 0 || u > 100) {
+				fprintf(stderr, "invalid nop probability '%s'\n", optarg);
+				exit(1);
+			}
+			divstate.nop_pct = u;
+			divstate.nop = 1;
+			divstate.enabled = 1;
+			break;
+		case 1004:
+			divstate.regrand = 1;
+			divstate.enabled = 1;
+			break;
 		case 'd':
 			for (; *optarg; optarg++)
 				if (isalpha(*optarg)) {
@@ -172,8 +211,15 @@ main(int ac, char *av[])
 			}
 			fprintf(hf, "\n");
 			fprintf(hf, "\t%-11s dump debug information\n", "-d <flags>");
+			fprintf(hf, "\t%-11s enable diversification\n", "--diversify");
+			fprintf(hf, "\t%-11s disable diversification\n", "--no-diversify");
+			fprintf(hf, "\t%-11s set deterministic seed\n", "--div-seed=N");
+			fprintf(hf, "\t%-11s enable nop insertion with N percent probability\n", "--div-nop=N");
+			fprintf(hf, "\t%-11s enable randomized register tie-breaks\n", "--div-regrand");
 			exit(c != 'h');
 		}
+
+	divseed(divstate.seed);
 
 	do {
 		f = av[optind];

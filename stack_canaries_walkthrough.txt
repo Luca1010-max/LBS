@@ -1,0 +1,340 @@
+Stack Canaries in QBE ARM64: Schritt-fuer-Schritt Erklaerung
+
+1. Ziel
+
+Die Aufgabe war, fuer das ARM64-Backend von QBE Stack Canaries einzubauen.
+Dabei soll jede Funktion in ihrem Stack-Frame einen Canary-Wert speichern und
+vor dem Return pruefen. Wenn der Wert veraendert wurde, darf die Funktion
+nicht normal zurueckkehren.
+
+
+2. Welche Dateien geaendert wurden
+
+Die wichtigsten Aenderungen liegen hier:
+
+- arm64/emit.c
+- arm64/targ.c
+- arm64/all.h
+- Makefile
+- test/bufoverflow.ssa
+- demo/stack_canary_attack.ssa
+
+
+3. Was in arm64/emit.c gemacht wurde
+
+3.1 Frame-Layout erweitert
+
+In arm64/emit.c wird das Stack-Frame-Layout der ARM64-Funktionen bestimmt.
+Dort wurde das Frame so erweitert, dass bei aktivierten Canaries zusaetzlich
+ein 8-Byte-Slot direkt oberhalb von x29/x30 reserviert wird.
+
+Relevant:
+
+- `framelayout(...)`
+- `slot(...)`
+
+Idee:
+
+- ohne Canary beginnen normale lokale Slots direkt nach dem normalen Prolog
+- mit Canary werden sie um 8 Byte nach oben verschoben
+
+Dadurch liegt der Canary bei:
+
+- `[x29, #16]`
+
+Das ist bewusst direkt neben den gesicherten Prolog-Daten:
+
+- `[x29, #0]` / `[x29, #8]` enthalten saved x29 / x30
+- `[x29, #16]` enthaelt den Canary
+
+
+3.2 Canary-Wert pro Funktion
+
+Es gibt eine Funktion:
+
+- `fncanary(Fn *fn)`
+
+Sie erzeugt aus Eigenschaften der Funktion einen 64-Bit-Wert:
+
+- Funktionsname
+- `fn->slot`
+- `fn->nblk`
+
+Das ist kein zufaelliger Canary pro Aufruf, aber ein eigener Canary pro
+Funktion.
+
+
+3.3 Sichtbare Helper-Funktionen im erzeugten Assembler
+
+Die Canary-Logik wurde absichtlich nicht komplett inline gelassen, sondern
+als sichtbare ARM64-Helper ausgegeben:
+
+- `__qbe_stack_canary_init`
+- `__qbe_stack_canary_check`
+- `__qbe_stack_canary_fail`
+
+Diese Funktionen werden in `arm64_emitfin(...)` am Ende der ausgegebenen
+Assemblerdatei emittiert.
+
+Das ist wichtig, weil man dadurch im Assembly direkt sehen kann:
+
+- wo der Canary gesetzt wird
+- wo er geprueft wird
+- welche Register verglichen werden
+
+
+3.4 Was die Helper tun
+
+`__qbe_stack_canary_init`
+
+- erwartet in `x16` die Adresse des Canary-Slots
+- erwartet in `x17` den erwarteten Canary-Wert
+- schreibt `x17` nach `[x16]`
+
+Effektiv:
+
+`str x17, [x16]`
+
+
+`__qbe_stack_canary_check`
+
+- erwartet in `x16` die Adresse des Canary-Slots
+- erwartet in `x17` den erwarteten Canary-Wert
+- laedt den aktuellen Stack-Canary in `x15`
+- vergleicht `x15` mit `x17`
+- springt bei Ungleichheit nach `__qbe_stack_canary_fail`
+
+Effektiv:
+
+`ldr x15, [x16]`
+`cmp x15, x17`
+`b.ne __qbe_stack_canary_fail`
+
+
+`__qbe_stack_canary_fail`
+
+- fuehrt `brk #1001` aus
+- das Programm trappt also sofort
+
+
+3.5 Was der Prolog jetzt macht
+
+In `arm64_emitfn(...)` wird nach dem normalen Funktionsprolog:
+
+- `mov x29, sp`
+
+jetzt zusaetzlich gemacht:
+
+1. Adresse des Canary-Slots in `x16` berechnen
+2. Erwarteten Canary-Wert in `x17` laden
+3. `__qbe_stack_canary_init` aufrufen
+
+Im erzeugten Assembly sieht das so aus:
+
+`add x16, x29, #16`
+`movz x17, ...`
+`movk x17, ...`
+`bl ___qbe_stack_canary_init`
+
+
+3.6 Was der Epilog jetzt macht
+
+Vor dem normalen Restore und `ret` wird jetzt:
+
+1. wieder `[x29, #16]` ueber `x16` adressiert
+2. der erwartete Canary in `x17` aufgebaut
+3. `__qbe_stack_canary_check` aufgerufen
+
+Im Assembly sieht das so aus:
+
+`add x16, x29, #16`
+`movz x17, ...`
+`movk x17, ...`
+`bl ___qbe_stack_canary_check`
+
+Danach kommt erst das eigentliche Restore von x29/x30 und das `ret`.
+
+
+4. Wie man die Canary im Assembly direkt sieht
+
+Wenn du z. B. die Datei
+
+- `test/bufoverflow.ssa`
+
+mit aktivierten Canaries uebersetzt, bekommst du in
+
+- `result/bufoverflow.canary.s`
+
+sichtbar:
+
+1. Im Prolog:
+
+`bl ___qbe_stack_canary_init`
+
+2. Vor dem Return:
+
+`bl ___qbe_stack_canary_check`
+
+3. Die eigentliche Vergleichslogik:
+
+`___qbe_stack_canary_check:`
+`ldr x15, [x16]`
+`cmp x15, x17`
+`b.ne ___qbe_stack_canary_fail`
+
+Das heisst:
+
+- `x16` zeigt auf den Canary-Slot
+- `x17` ist der erwartete Wert
+- `x15` ist der aus dem Stack geladene aktuelle Wert
+
+
+5. Ein- und Ausschalten der Canaries
+
+Es wurde ein Build-Schalter eingebaut:
+
+- `CANARY=1` aktiviert Stack Canaries
+- `CANARY=0` deaktiviert Stack Canaries
+
+Das wird ueber das Makefile gesetzt:
+
+`CFLAGS += -DARM64_STACK_CANARY=$(CANARY)`
+
+
+6. Welche Datei den Buffer Overflow demonstriert
+
+Die Testdatei ist:
+
+- `test/bufoverflow.ssa`
+
+Die Funktion `smash` reserviert nur einen kleinen lokalen Buffer:
+
+`%buf =l alloc8 8`
+
+Danach werden aus diesem Buffer durch Berechnung fehlerhafte Offsets
+abgeleitet:
+
+- ein Offset fuer den Return-Slot
+- ein Offset fuer den Canary-Bereich
+
+Die Zieladressen werden also nicht direkt als nackte Konstanten benutzt,
+sondern ueber Rechenoperationen aufgebaut.
+
+Dadurch entsteht ein absichtlicher Stack-basierter Out-of-Bounds-Write,
+also ein Buffer Overflow / Stack Smashing Szenario.
+
+
+7. Warum der Canary bei diesem Test greift
+
+Ohne Canaries:
+
+- `smash` ueberschreibt die Ruecksprunginformation
+- Kontrolle springt in `hacked`
+- das Programm druckt:
+  `buffer overflow succeeded`
+
+Mit Canaries:
+
+- `smash` veraendert auch den Canary-Bereich
+- vor dem Return prueft `__qbe_stack_canary_check` den Wert
+- die Werte stimmen nicht mehr ueberein
+- es geht nach `__qbe_stack_canary_fail`
+- das Programm trappt mit `brk #1001`
+
+
+8. Wichtige Commands
+
+8.1 QBE mit Canaries bauen
+
+`cd /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2`
+`make clean`
+`make CANARY=1 qbe`
+`cp -f qbe result/qbe.canary`
+
+
+8.2 QBE ohne Canaries bauen
+
+`make clean`
+`make CANARY=0 qbe`
+`cp -f qbe result/qbe.no_canary`
+
+
+8.3 Testprogramm zu Assembly uebersetzen
+
+Mit Canaries:
+
+`./result/qbe.canary -o result/bufoverflow.canary.s test/bufoverflow.ssa`
+
+Ohne Canaries:
+
+`./result/qbe.no_canary -o result/bufoverflow.no_canary.s test/bufoverflow.ssa`
+
+
+8.4 Assembly zu einem ausfuehrbaren Programm linken
+
+Mit Canaries:
+
+`cc result/bufoverflow.canary.s -o result/bufoverflow.canary`
+
+Ohne Canaries:
+
+`cc result/bufoverflow.no_canary.s -o result/bufoverflow.no_canary`
+
+
+8.5 Demo ausfuehren
+
+Ohne Canaries:
+
+`./result/bufoverflow.no_canary`
+
+Erwartung:
+
+- Ausgabe: `buffer overflow succeeded`
+
+Mit Canaries:
+
+`./result/bufoverflow.canary`
+
+Erwartung:
+
+- Trap / Abbruch durch `brk #1001`
+
+
+8.6 Regressionstests des Compilers
+
+Mit aktivierten Canaries:
+
+`make clean`
+`make CANARY=1 check`
+
+
+9. Was man fuer die Abgabe im Assembly zeigen kann
+
+Am besten zeigst du in `result/bufoverflow.canary.s` diese Stellen:
+
+1. Prolog mit Canary-Initialisierung
+2. Epilog mit `bl ___qbe_stack_canary_check`
+3. Die Funktion `___qbe_stack_canary_check`
+4. Die Funktion `___qbe_stack_canary_fail`
+
+In `result/bufoverflow.no_canary.s` kannst du dagegen zeigen:
+
+1. Es gibt keinen Canary-Slot
+2. Es gibt keinen Aufruf von `___qbe_stack_canary_init`
+3. Es gibt keinen Aufruf von `___qbe_stack_canary_check`
+
+Damit ist der Unterschied zwischen geschuetztem und ungeschuetztem Code
+direkt sichtbar.
+
+
+10. Zusammenfassung
+
+Die Implementierung macht auf ARM64 jetzt Folgendes:
+
+1. reserviert optional einen Canary-Slot pro Funktion
+2. schreibt im Prolog einen funktionsspezifischen Canary hinein
+3. prueft ihn vor jedem Return
+4. stoppt das Programm bei Manipulation
+5. laesst sich ueber `CANARY=1` und `CANARY=0` ein- und ausschalten
+6. ist im ausgegebenen Assembler direkt sichtbar
+

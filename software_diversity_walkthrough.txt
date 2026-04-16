@@ -1,0 +1,837 @@
+Software Diversity Walkthrough
+
+1. Uebersicht
+
+Fuer diese Aufgabe habe ich zwei Diversifizierungs-Transformationen implementiert:
+
+1. NOP Insertion
+2. Register Assignment Randomization
+
+Ich habe Equivalent Instruction Substitution bewusst nicht implementiert.
+Der Grund ist konservative Korrektheit. In diesem QBE-Stand waere eine robuste
+Instruktionsersetzung ueber mehrere Backends hinweg riskanter als die beiden
+anderen Techniken, weil dabei sehr schnell implizite Flags, operandabhaengige
+Assemblerformen, Pseudoinstruktionen und architekturspezifische Spezialfaelle
+betroffen sind. Fuer die Aufgabenstellung war explizit gefordert, unsaubere
+oder riskante Ersetzungen nicht zu erzwingen. Deshalb habe ich mich fuer die
+stabilere Kombination aus NOP Insertion und Register Assignment Randomization
+entschieden.
+
+Die Implementierung ist bewusst minimal-invasiv:
+
+- NOP Insertion haengt direkt an den finalen Emissionsschleifen der
+  Architektur-Emitter.
+- Register Assignment Randomization greift nur an einer Stelle im
+  Register-Allocator ein, an der ohnehin zwischen mehreren gueltigen
+  Kandidaten gewaehlt wird.
+- Seed, Aktivierung und Technik-Schalter werden zentral ueber eine kleine,
+  reproduzierbare Diversifizierungs-Konfiguration gesteuert.
+
+
+2. Geaenderte Dateien
+
+Die fuer die Diversitaetsfunktion relevanten Aenderungen liegen in:
+
+- all.h
+- util.c
+- main.c
+- rega.c
+- amd64/emit.c
+- arm64/emit.c
+- rv64/emit.c
+
+Es gibt ausserdem im Repository weiterhin andere, fruehere Aenderungen aus
+den vorherigen Aufgaben. Fuer HW Assignment #2 relevant sind aber die oben
+genannten Dateien.
+
+
+3. Warum genau diese Einhaengepunkte
+
+3.1 NOP Insertion
+
+Die Aufgabenstellung nennt `emitins` bzw. `emit.c` als geeigneten Bereich.
+Im vorliegenden QBE-Code werden die finalen Assemblierinstruktionen aber nicht
+in einer gemeinsamen, zentralen `emitins`-Implementierung fuer alle Targets
+erzeugt, sondern architekturspezifisch in:
+
+- `amd64/emit.c`
+- `arm64/emit.c`
+- `rv64/emit.c`
+
+Der konservativste Punkt fuer NOP Insertion ist nicht tief in einzelnen
+Spezialfaellen innerhalb von `emitins`, sondern in den aeusseren Schleifen,
+die pro Basic Block ueber die finalen IR-Instruktionen iterieren und dann
+`emitins(...)` aufrufen.
+
+Dadurch ist die Semantik sauber:
+
+- Labels werden nicht verschoben.
+- Datensektionen werden nicht veraendert.
+- Prolog-/Epilog-Struktur wird nicht mit zusaetzlichen NOPs zwischen
+  Register-Saves oder Restore-Schritten vermischt.
+- Es wird nur direkt vor normalen emittierten Instruktionen optional ein NOP
+  ausgegeben.
+
+
+3.2 Register Assignment Randomization
+
+Die Aufgabenstellung nennt `rega.c` als Orientierung. Dort waehlt QBE in
+`ralloctry(...)` ein Register fuer ein Temporary, wenn kein fester Hint
+greift. Die vorhandene Logik nimmt dabei konservativ den ersten passenden
+Kandidaten.
+
+Das ist der ideale Einhaengepunkt fuer eine sichere Diversifizierung:
+
+- Es wird nicht der gesamte Allocator umgebaut.
+- Es werden keine neuen Constraints eingefuehrt.
+- Es wird nur zwischen ohnehin gueltigen Kandidaten randomisiert.
+- Reserved Registers, Registerklassen, Calling Convention und vorhandene
+  Hint-Masken bleiben unangetastet.
+
+
+4. Aenderung in all.h
+
+Datei:
+
+- `all.h`
+
+Relevante Stelle:
+
+- `all.h:34`
+- `all.h:67`
+- `all.h:451`
+
+Was vorher die Rolle war:
+
+`all.h` enthaelt die zentralen Datentypen, globale Extern-Deklarationen und
+gemeinsamen Hilfsfunktions-Prototypen fuer den gesamten Compiler.
+
+Was hinzugefuegt wurde:
+
+Ich habe einen neuen globalen Zustand eingefuehrt:
+
+- `DivState`
+
+Diese Struktur enthaelt:
+
+- `enabled`
+- `nop`
+- `regrand`
+- `nop_pct`
+- `seed`
+- `state`
+
+Zusaetzlich wurden neue Funktionsprototypen deklariert:
+
+- `divseed(uint64_t)`
+- `divshouldnop(void)`
+- `divpick(int)`
+
+Warum diese Stelle:
+
+Die Diversifizierungslogik wird von mehreren Modulen gebraucht:
+
+- `main.c` zum Parsen der Optionen
+- `util.c` fuer RNG und zentrale Hilfsfunktionen
+- `rega.c` fuer Register-Randomisierung
+- `amd64/emit.c`, `arm64/emit.c`, `rv64/emit.c` fuer NOP Insertion
+
+Darum ist `all.h` der richtige Ort fuer die gemeinsame Sichtbarkeit.
+
+
+5. Aenderung in util.c
+
+Datei:
+
+- `util.c`
+
+Relevante Stelle:
+
+- `util.c:35`
+- `util.c:45`
+
+Was vorher die Rolle war:
+
+`util.c` enthaelt zentrale, backend-unabhaengige Hilfsfunktionen wie
+Allokation, String-Interning und allgemeine Hilfsroutinen.
+
+Was hinzugefuegt wurde:
+
+Ich habe dort den globalen Diversitaetszustand und die zugehoerige RNG-Logik
+eingebaut:
+
+- `DivState divstate`
+- `divseed(...)`
+- `divrand(...)`
+- `divshouldnop(...)`
+- `divpick(...)`
+
+Neue Logik im Detail:
+
+1. `divstate` speichert die aktuelle Laufzeitkonfiguration.
+2. `divseed(...)` initialisiert den internen RNG-Zustand deterministisch.
+3. `divrand(...)` erzeugt einen 64-Bit-Pseudozufallswert.
+4. `divshouldnop(...)` entscheidet mit Prozentwahrscheinlichkeit, ob ein NOP
+   eingefuegt werden soll.
+5. `divpick(n)` waehlt deterministisch anhand des Seeds einen Index von
+   `0..n-1`. Wenn Diversifizierung oder Register-Randomisierung nicht aktiv
+   ist, liefert die Funktion `0` und bildet damit das alte Verhalten
+   "nimm den ersten Kandidaten" exakt nach.
+
+Warum diese Stelle:
+
+Die RNG-Logik ist backend-unabhaengig und wird von mehreren Teilen des
+Compilers verwendet. Deshalb gehoert sie nicht in ein einzelnes Backend und
+nicht in `rega.c`, sondern in einen zentralen Hilfsbereich.
+
+Wichtige konservative Eigenschaft:
+
+Wenn Diversifizierung deaktiviert ist, verhalten sich die Hilfsfunktionen so,
+dass das alte Verhalten erhalten bleibt.
+
+
+6. Aenderung in main.c
+
+Datei:
+
+- `main.c`
+
+Relevante Stelle:
+
+- `main.c:120`
+- `main.c:136`
+- `main.c:214`
+
+Was vorher die Rolle war:
+
+`main.c` enthaelt den Kommandozeilen-Einstieg des Compilers und verarbeitet
+die Optionen `-h`, `-o`, `-t` und `-d`.
+
+Was hinzugefuegt wurde:
+
+Es wurden neue Long-Options eingefuehrt:
+
+- `--diversify`
+- `--no-diversify`
+- `--div-seed=N`
+- `--div-nop=N`
+- `--div-regrand`
+
+Wie die Optionen funktionieren:
+
+- `--diversify`
+  aktiviert den globalen Diversitaetsmodus
+
+- `--no-diversify`
+  deaktiviert den globalen Diversitaetsmodus wieder
+
+- `--div-seed=N`
+  setzt den Seed deterministisch auf `N`
+
+- `--div-nop=N`
+  aktiviert NOP Insertion mit `N` Prozent Wahrscheinlichkeit
+  zulaessiger Bereich: `0..100`
+
+- `--div-regrand`
+  aktiviert Register Assignment Randomization
+
+Wichtige Semantik:
+
+- Das Setzen einer Technikoption aktiviert auch `enabled`.
+- Ohne Technikoption bleibt Diversifizierung wirkungslos.
+- Durch `divseed(divstate.seed)` wird der interne RNG-Zustand nach dem
+  Parsen der Optionen initialisiert.
+
+Warum diese Stelle:
+
+Die Optionen sollen sauber in die bestehende CLI integriert werden, statt
+ueber Umgebungsvariablen oder Build-Flags verteilt zu werden.
+
+
+7. Aenderung in rega.c
+
+Datei:
+
+- `rega.c`
+
+Relevante Stelle:
+
+- `rega.c:31`
+- `rega.c:124`
+
+Was vorher die Rolle war:
+
+Die Funktion `ralloctry(...)` waehlt ein Register fuer ein Temporary. Wenn
+kein bestehender Register-Hint direkt verwendbar ist, durchsucht die Funktion
+die erlaubten Register in fester Reihenfolge und nimmt den ersten passenden
+Kandidaten.
+
+Was geaendert wurde:
+
+Ich habe eine kleine Hilfsfunktion eingefuehrt:
+
+- `pickreg(...)`
+
+Diese Funktion baut die Menge der ohnehin gueltigen Kandidaten auf:
+
+1. zuerst Register, die nicht in der Hint-Maske `hint.m` gesperrt sind
+2. falls das nicht reicht, freie Register der richtigen Klasse
+
+Aus dieser Kandidatenmenge wird dann ueber `divpick(n)` ein Kandidat
+ausgewaehlt.
+
+Wichtig fuer die Korrektheit:
+
+- Registerklasse bleibt unveraendert
+- `gpr0..gpr0+ngpr` bzw. `fpr0..fpr0+nfpr` werden weiterhin respektiert
+- gesperrte Register laut Hint-Maske werden weiterhin vermieden
+- bereits belegte Register werden weiterhin nicht illegal doppelt vergeben
+- es wird nur der Tie-Break zwischen mehreren gueltigen Kandidaten
+  randomisiert
+
+Warum genau diese Stelle:
+
+Diese Stelle ist die konservativste Form von Register-Randomisierung.
+Ich habe bewusst nicht:
+
+- die Kostenheuristik umgebaut
+- Blockreihenfolgen veraendert
+- Spill-Entscheidungen veraendert
+- phi-Handling veraendert
+
+Stattdessen wird nur die Kandidatenwahl innerhalb des bestehenden legalen
+Suchraums variiert.
+
+
+8. Aenderung in amd64/emit.c
+
+Datei:
+
+- `amd64/emit.c`
+
+Relevante Stelle:
+
+- `amd64/emit.c:602`
+
+Was vorher die Rolle war:
+
+`amd64_emitfn(...)` iteriert blockweise ueber `b->ins` und ruft fuer jede
+Instruktion `emitins(...)` auf.
+
+Was geaendert wurde:
+
+Vor normalen Instruktionen wird jetzt optional ein `nop` ausgegeben:
+
+- nur wenn `divshouldnop()` wahr ist
+- nicht fuer `Onop`
+- nicht fuer `Odbgloc`
+
+Warum diese Stelle:
+
+Hier ist der letzte sichere Moment direkt vor der finalen Emission einer
+Instruktion. Labels wurden schon ausgegeben, Daten werden hier nicht beruehrt,
+und Sprungziele bleiben stabil.
+
+
+9. Aenderung in arm64/emit.c
+
+Datei:
+
+- `arm64/emit.c`
+
+Relevante Stelle:
+
+- `arm64/emit.c:690`
+
+Was vorher die Rolle war:
+
+`arm64_emitfn(...)` laeuft blockweise ueber die finalen ARM64-Instruktionen
+und ruft `emitins(...)` auf.
+
+Was geaendert wurde:
+
+Genau wie auf amd64 wird vor normalen Instruktionen optional
+
+- `nop`
+
+ausgegeben, wenn `divshouldnop()` dies entscheidet.
+
+Warum diese Stelle:
+
+Das ist die konservative Stelle nahe an der finalen Ausgabe. Die Canary-Logik,
+Frame-Erzeugung und sonstige Backend-Struktur bleiben unangetastet.
+
+
+10. Aenderung in rv64/emit.c
+
+Datei:
+
+- `rv64/emit.c`
+
+Relevante Stelle:
+
+- `rv64/emit.c:495`
+
+Was vorher die Rolle war:
+
+`rv64_emitfn(...)` emittiert blockweise finalen RISC-V-Assembler.
+
+Was geaendert wurde:
+
+Vor normalen Instruktionen wird optional ein
+
+- `nop`
+
+eingefuegt, wieder mit denselben konservativen Bedingungen wie in den beiden
+anderen Backends.
+
+Warum diese Stelle:
+
+So ist die NOP-Insertion target-uebergreifend implementiert, ohne die
+innere Speziallogik einzelner `emitins(...)`-Faelle umzuschreiben.
+
+
+11. Warum Equivalent Instruction Substitution nicht implementiert wurde
+
+Ich habe diese Technik nach Analyse bewusst verworfen.
+
+Begruendung:
+
+- Im bestehenden Code werden viele Assemblerformen tabellengetrieben und
+  operandabhaengig generiert.
+- Einige Instruktionen haben implizite Flag-Effekte oder Pseudoformen.
+- Eine konservativ sichere, allgemein nutzbare Substitutionsbasis waere in
+  diesem Stand sehr schmal und schwer reviewbar.
+- Die Aufgabe fordert explizit, riskante oder unsaubere Ersetzungen nicht zu
+  erzwingen.
+
+Die robustere Alternative war daher:
+
+- NOP Insertion
+- Register Assignment Randomization
+
+
+12. Build-Kommandos
+
+Normales Bauen:
+
+`cd /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2`
+`make qbe`
+
+Hilfe mit den neuen Optionen:
+
+`./qbe -h`
+
+Standard-Regressionstest:
+
+`make check`
+
+
+13. Verwendungsbeispiele fuer die neuen Optionen
+
+13.1 Nur Diversifizierungsmodus aktivieren
+
+`./qbe --diversify test/echo.ssa`
+
+Das allein aktiviert noch keine konkrete Technik. Fuer sichtbare Diversitaet
+muss mindestens `--div-nop=N` oder `--div-regrand` gesetzt werden.
+
+
+13.2 Nur NOP Insertion aktivieren
+
+`./qbe --diversify --div-seed=7 --div-nop=35 -o /tmp/echo.nop.s test/echo.ssa`
+
+Das erzeugt mit 35 Prozent Wahrscheinlichkeit vor einer normalen Instruktion
+ein `nop`.
+
+
+13.3 Nur Register Assignment Randomization aktivieren
+
+`./qbe --diversify --div-seed=1 --div-regrand -o /tmp/queen.r1.s test/queen.ssa`
+
+
+13.4 Beide Techniken zusammen
+
+`./qbe --diversify --div-seed=7 --div-nop=35 --div-regrand -o /tmp/echo.div.s test/echo.ssa`
+
+
+13.5 Konkrete Demo-Tests im Repository
+
+Zusatzlich zu den vorhandenen Repo-Tests habe ich zwei kleine manuelle
+SSA-Demos in `test/` angelegt:
+
+- `test/_nop_insert_demo.ssa`
+- `test/_regrand_demo.ssa`
+
+Beide Dateien haben absichtlich ein `_` im Namen, damit sie nicht von
+`make check` automatisch mitgelaufen werden. Sie dienen nur zur sichtbaren
+Verifikation der Diversifizierungsfeatures.
+
+Kompilieren der NOP-Demo:
+
+`./qbe -o result/nop_insert_demo.base.s test/_nop_insert_demo.ssa`
+`./qbe --diversify --div-nop=35 --div-seed=7 -o result/nop_insert_demo.div.s test/_nop_insert_demo.ssa`
+
+Kompilieren der Register-Demo:
+
+`./qbe -o result/regrand_demo.base.s test/_regrand_demo.ssa`
+`./qbe --diversify --div-regrand --div-seed=7 -o result/regrand_demo.div.s test/_regrand_demo.ssa`
+
+Die erzeugten Dateien liegen dann in `result/` und koennen direkt visuell
+verglichen werden:
+
+- `result/nop_insert_demo.base.s`
+- `result/nop_insert_demo.div.s`
+- `result/regrand_demo.base.s`
+- `result/regrand_demo.div.s`
+
+
+14. Wie man Reproduzierbarkeit prueft
+
+Gleicher Seed, gleiche Ausgabe:
+
+`./qbe --diversify --div-nop=35 --div-regrand --div-seed=7 -o /tmp/div.same1.s test/echo.ssa`
+`./qbe --diversify --div-nop=35 --div-regrand --div-seed=7 -o /tmp/div.same2.s test/echo.ssa`
+`cmp -s /tmp/div.same1.s /tmp/div.same2.s && echo identical`
+
+Bei meinem Test war das Ergebnis identisch.
+
+
+15. Wie man unterschiedliche Seeds prueft
+
+Unterschiedliche Seeds, oft unterschiedliche Ausgabe:
+
+`./qbe --diversify --div-nop=35 --div-regrand --div-seed=7 -o /tmp/div.diff1.s test/echo.ssa`
+`./qbe --diversify --div-nop=35 --div-regrand --div-seed=8 -o /tmp/div.diff2.s test/echo.ssa`
+`cmp -s /tmp/div.diff1.s /tmp/div.diff2.s || echo different`
+
+Bei meinem Test waren die Dateien unterschiedlich.
+
+Zur NOP-Zahl kann man zaehlen:
+
+`rg -c '^\tnop$' /tmp/div.diff1.s /tmp/div.diff2.s /tmp/div.same1.s`
+
+In meinem Lauf ergab das:
+
+- `/tmp/div.same1.s:16`
+- `/tmp/div.diff1.s:16`
+- `/tmp/div.diff2.s:11`
+
+Das zeigt, dass unterschiedliche Seeds bereits fuer die NOP-Insertion sichtbar
+andere Ausgabe erzeugen.
+
+
+16. Konkretes NOP-Beispiel aus der Demo-Datei
+
+Fuer die Datei `test/_nop_insert_demo.ssa` habe ich diese beiden Assembly-
+Dateien erzeugt:
+
+- `result/nop_insert_demo.base.s`
+- `result/nop_insert_demo.div.s`
+
+Vergleichskommando:
+
+`diff -u result/nop_insert_demo.base.s result/nop_insert_demo.div.s`
+
+Suche nur nach NOPs:
+
+`rg -n '^\tnop$' result/nop_insert_demo.base.s result/nop_insert_demo.div.s`
+
+In meinem Lauf wurden NOPs nur in der diversifizierten Variante gefunden:
+
+- `result/nop_insert_demo.div.s:15`
+- `result/nop_insert_demo.div.s:18`
+- `result/nop_insert_demo.div.s:21`
+- `result/nop_insert_demo.div.s:27`
+- `result/nop_insert_demo.div.s:30`
+
+Ein konkreter Ausschnitt aus dem Diff:
+
+`mov x1, #1`
+`+nop`
+`add x0, x29, #28`
+`add x1, x0, x1`
+`+nop`
+`mov w0, #0`
+`strb w0, [x1]`
+`+nop`
+
+Das zeigt genau die gewuenschte Wirkung:
+
+- die normale Instruktionsfolge bleibt erhalten
+- zusaetzlich werden harmlose `nop`-Instruktionen eingefuegt
+- die Semantik des Programms aendert sich dadurch nicht
+
+Auch im eigentlichen Dateivergleich ist das direkt sichtbar:
+
+- Basisversion bei `result/nop_insert_demo.base.s:14` bis `:26`
+- diversifizierte Version bei `result/nop_insert_demo.div.s:14` bis `:31`
+
+In der Basisversion stehen nur die normalen Instruktionen, in der
+diversifizierten Version stehen dazwischen zusaetzliche `nop`-Zeilen.
+
+
+17. Wie man Register Assignment Randomization isoliert prueft
+
+Reine Register-Randomisierung ohne NOP-Insertion:
+
+`./qbe --diversify --div-regrand --div-seed=1 -o /tmp/regrand1.s test/queen.ssa`
+`./qbe --diversify --div-regrand --div-seed=2 -o /tmp/regrand2.s test/queen.ssa`
+`cmp -s /tmp/regrand1.s /tmp/regrand2.s || echo different`
+
+Bei meinem Test waren die Dateien unterschiedlich.
+
+Um die Unterschiede sichtbar zu machen:
+
+`diff -u /tmp/regrand1.s /tmp/regrand2.s | sed -n '1,120p'`
+
+In meinem Lauf sieht man dort unterschiedliche Registerbelegungen wie
+beispielsweise:
+
+- in einer Variante `w23`, `x22`, `x25`
+- in einer anderen Variante `w26`, `x14`, `x19`
+
+Das ist wichtig, weil hier keine NOPs den Unterschied verursachen, sondern die
+tatsaechliche Registerzuweisung.
+
+
+18. Konkretes Register-Randomisierungsbeispiel aus der Demo-Datei
+
+Fuer die Datei `test/_regrand_demo.ssa` habe ich diese beiden Assembly-
+Dateien erzeugt:
+
+- `result/regrand_demo.base.s`
+- `result/regrand_demo.div.s`
+
+Vergleichskommando:
+
+`diff -u result/regrand_demo.base.s result/regrand_demo.div.s`
+
+In meinem Lauf sieht man dort deutlich andere Registerbelegungen. Ein
+konkreter Ausschnitt:
+
+- Basisvariante:
+  `mov w18, w6`
+  `mov w6, w1`
+  `mov w1, w18`
+
+- diversifizierte Variante:
+  `add w25, w0, w1`
+  `add w0, w2, w3`
+  `add w21, w4, w5`
+
+Spaeter im selben Diff tauchen weitere andere Register auf, etwa:
+
+- Basisvariante mit `w18`, `w7`, `w6`, `w3`, `w2`
+- diversifizierte Variante mit `w25`, `w21`, `w27`, `w24`, `w26`, `w20`
+
+Wichtig ist hier nicht die genaue Zahl oder Reihenfolge, sondern dass bei
+gleicher Semantik unterschiedliche legale Registerverwendungen im Assembler
+sichtbar werden.
+
+Liveness-Betrachtung:
+
+Gerade bei Register-Randomisierung ist wichtig, dass nicht nur andere
+Register auftauchen, sondern dass die Live-Ranges trotzdem korrekt getrennt
+bleiben.
+
+In `_mix` gibt es zwischen den Rechenoperationen keine Funktionsaufrufe. Dort
+duerfen also freie Register innerhalb der erlaubten Klasse anders verteilt
+werden, solange gleichzeitig lebende Werte nicht auf dasselbe Register gelegt
+werden. Genau das ist im Assembler sichtbar:
+
+- in der Basisvariante werden einige wenige Register wie `w18`, `w7`, `w6`
+  mehrfach wiederverwendet
+- in der diversifizierten Variante werden mehr verschiedene Register parallel
+  benutzt, zum Beispiel `w25`, `w21`, `w27`, `w26`, `w20`
+
+Ein konkretes Beispiel fuer kontrollierte Wiederverwendung ist `w8` in der
+diversifizierten Variante:
+
+- zuerst als Ergebnis von `add w8, w26, w12`
+- spaeter erst nach Verbrauch dieses Wertes erneut in `and w8, w11, w20`
+
+Das ist zulaessig, weil der fruehere Wert an dieser Stelle nicht mehr live
+ist.
+
+Besonders wichtig ist die Stelle in `_main`, weil dort ein Rueckgabewert aus
+dem ersten `call _mix` ueber den zweiten `call _mix` hinweg live bleibt.
+
+Basisvariante:
+
+- nach dem ersten Aufruf: `mov w19, w0`
+- nach dem zweiten Aufruf: `add w0, w19, w0`
+
+Diversifizierte Variante:
+
+- nach dem ersten Aufruf: `mov w24, w0`
+- nach dem zweiten Aufruf: `mov w28, w0`
+- danach: `add w0, w24, w28`
+
+Das ist korrekt, weil hier callee-saved Register verwendet werden. In der
+diversifizierten Variante sind das sichtbar:
+
+- Save im Prolog von `_main`:
+  `str x24, [x29, 40]`
+  `str x28, [x29, 32]`
+
+- Restore im Epilog von `_main`:
+  `ldr x24, [x29, 40]`
+  `ldr x28, [x29, 32]`
+
+Dasselbe Muster sieht man auch in `_mix`, wo die diversifizierte Variante
+mehr callee-saved Register benutzt und deshalb entsprechend mehr Register im
+Stackframe sichert und spaeter restauriert:
+
+- `x19`
+- `x20`
+- `x21`
+- `x24`
+- `x25`
+- `x26`
+- `x27`
+
+Deshalb ist auch der Stackframe groesser:
+
+- Basis `_mix`: `stp x29, x30, [sp, -32]!`
+- diversifiziert `_mix`: `stp x29, x30, [sp, -96]!`
+
+Das ist kein Fehler, sondern die direkte Folge davon, dass mehr callee-saved
+Register fuer lebende Werte genutzt werden.
+
+Ein einfacher Laufzeittest zeigt, dass beide Varianten trotz unterschiedlicher
+Registerbelegung dieselbe Semantik haben:
+
+`cc result/regrand_demo.base.s -o /tmp/regrand_demo.base`
+`/tmp/regrand_demo.base`
+`echo $?`
+
+`cc result/regrand_demo.div.s -o /tmp/regrand_demo.div`
+`/tmp/regrand_demo.div`
+`echo $?`
+
+In meinem Lauf lieferten beide Varianten denselben Exit-Code:
+
+- Basis: `168`
+- diversifiziert: `168`
+
+Das bestaetigt:
+
+- andere Registerbelegung ist im Assembly sichtbar
+- Liveness ueber Call-Grenzen bleibt korrekt
+- callee-saved Register werden sauber gesichert und restauriert
+- die Programmbedeutung bleibt erhalten
+
+
+19. Wie man erkennt, dass die Ausgabe weiterhin gueltig ist
+
+Ein einfacher Funktionscheck mit einer diversifizierten Ausgabe:
+
+`./qbe --diversify --div-nop=35 --div-regrand --div-seed=7 -o /tmp/div.puts10.s test/puts10.ssa`
+`cc /tmp/div.puts10.s -o /tmp/div.puts10`
+`/tmp/div.puts10`
+
+In meinem Lauf hat das Programm korrekt die Zahlen `0` bis `9` ausgegeben.
+Das zeigt:
+
+- der erzeugte Assembler ist syntaktisch gueltig
+- er ist linkbar
+- die Semantik bleibt erhalten
+
+
+20. Warum die NOP-Insertion konservativ ist
+
+Es werden NOPs nur an sicheren Stellen eingefuegt:
+
+- innerhalb der Block-Emissionsschleifen
+- nur vor normalen Instruktionen
+- nicht vor Labels
+- nicht in Daten-Sektionen
+- nicht fuer `Onop`
+- nicht fuer `Odbgloc`
+
+Es werden keine Sprungziele umgeschrieben und keine ABI-Regeln veraendert.
+
+
+21. Warum die Register-Randomisierung konservativ ist
+
+Die Randomisierung aendert nur den Tie-Break zwischen bereits legalen
+Kandidaten.
+
+Es bleibt unveraendert:
+
+- Registerklasse
+- Hint-Masken
+- globale reservierte Register
+- bestehende Spill-Entscheidungen
+- Calling-Convention-Invarianten
+- Sonderlogik fuer fest zugeordnete Register
+
+Es gibt also keine aggressive Neuplanung des Allocators, sondern nur eine
+kontrollierte Variation innerhalb des legalen Auswahlraums.
+
+
+22. Bewusst konservative Grenzen
+
+Diese Implementierung hat absichtlich Grenzen:
+
+1. Equivalent Instruction Substitution wurde nicht erzwungen.
+2. NOP Insertion betrifft nur die finalen architekturspezifischen
+   Emissionsschleifen und nicht jede moegliche Hilfsemission tief in
+   Spezialfaellen.
+3. Register Assignment Randomization betrifft nur Kandidatenauswahl in
+   `ralloctry(...)`, nicht die grobe Struktur des Allocators.
+4. Die NOP-Wahrscheinlichkeit ist als ganzzahliger Prozentwert `0..100`
+   umgesetzt, nicht als Floating-Point-Wert.
+5. Die sichtbare Auswirkung von Register-Randomisierung haengt vom Eingabe-
+   programm ab. Kleine Programme haben unter Umstaenden weniger gleichwertige
+   Kandidatensituationen als groessere Programme.
+
+
+23. Datei-fuer-Datei Kurzfazit
+
+`all.h`
+
+- gemeinsamer Zustand und Prototypen fuer Diversifizierung
+
+`util.c`
+
+- deterministische RNG- und Entscheidungsfunktionen
+
+`main.c`
+
+- neue CLI-Optionen
+
+`rega.c`
+
+- konservative Register-Tie-Break-Randomisierung
+
+`amd64/emit.c`
+
+- optionale NOP-Insertion vor normalen Instruktionen
+
+`arm64/emit.c`
+
+- optionale NOP-Insertion vor normalen Instruktionen
+
+`rv64/emit.c`
+
+- optionale NOP-Insertion vor normalen Instruktionen
+
+
+24. Abschluss
+
+Die Implementierung erfuellt die Aufgabenanforderung mit zwei robusten,
+konservativen Techniken:
+
+1. NOP Insertion
+2. Register Assignment Randomization
+
+Sie ist:
+
+- reproduzierbar per Seed
+- per CLI steuerbar
+- minimal-invasiv
+- ueber `make check` mit deaktivierter Diversifizierung regressionsgetestet
+- ueber konkrete Seed-Vergleiche validiert
+- ueber einen realen Assembler-Link-und-Run-Schritt funktional geprueft

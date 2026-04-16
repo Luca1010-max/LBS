@@ -496,6 +496,11 @@ rv64_emitfn(Fn *fn, FILE *f)
 		if (lbl || b->npred > 1)
 			fprintf(f, ".L%d:\n", id0+b->id);
 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+			if (i->op != Onop && i->op != Odbgloc) {
+				if (divshouldnop())
+					fputs("\tnop\n", f);
+				emitins(i, fn, f);
+			} else
 			emitins(i, fn, f);
 		lbl = 1;
 		switch (b->jmp.type) {

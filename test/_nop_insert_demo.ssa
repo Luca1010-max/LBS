@@ -1,0 +1,26 @@
+export
+function $main() {
+@start
+	%buf =l alloc4 4
+	%nl =l add %buf, 1
+	storeb 0, %nl
+@loop
+	%i =w phi @start 0, @body %i1
+	%c =w add %i, 65
+	storeb %c, %buf
+	%r =w call $puts(l %buf)
+	%a =w mul %i, 3
+	%b =w add %a, 7
+	%d =w sub %b, %i
+	%e =w xor %d, 5
+	%f =w and %e, 31
+	%g =w or %f, %i
+	%h =w add %g, 1
+	%i1 =w add %i, 1
+	%cmp =w cslew %i1, 4
+	jnz %cmp, @body, @end
+@body
+	jmp @loop
+@end
+	ret
+}

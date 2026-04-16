@@ -1,0 +1,32 @@
+export function w $mix(w %a, w %b, w %c, w %d, w %e, w %f, w %g, w %h) {
+@start
+	%t1 =w add %a, %b
+	%t2 =w add %c, %d
+	%t3 =w add %e, %f
+	%t4 =w add %g, %h
+	%t5 =w mul %t1, 3
+	%t6 =w mul %t2, 5
+	%t7 =w mul %t3, 7
+	%t8 =w mul %t4, 9
+	%u1 =w xor %t5, %t7
+	%u2 =w xor %t6, %t8
+	%u3 =w add %u1, %u2
+	%u4 =w sub %t8, %t1
+	%u5 =w add %t7, %t2
+	%u6 =w mul %u4, %u5
+	%v1 =w and %u3, 1023
+	%v2 =w and %u6, 1023
+	%v3 =w add %v1, %v2
+	%v4 =w sub %v3, %t3
+	%v5 =w add %v4, %t4
+	%v6 =w xor %v5, %u1
+	ret %v6
+}
+
+export function w $main() {
+@start
+	%r1 =w call $mix(w 1, w 2, w 3, w 4, w 5, w 6, w 7, w 8)
+	%r2 =w call $mix(w 11, w 12, w 13, w 14, w 15, w 16, w 17, w 18)
+	%r3 =w add %r1, %r2
+	ret %r3
+}

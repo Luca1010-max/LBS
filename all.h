@@ -31,6 +31,7 @@ typedef struct Field Field;
 typedef struct Dat Dat;
 typedef struct Lnk Lnk;
 typedef struct Target Target;
+typedef struct DivState DivState;
 
 enum {
 	NString = 80,
@@ -61,6 +62,15 @@ struct Target {
 	void (*emitfin)(FILE *);
 	char asloc[4];
 	char assym[4];
+};
+
+struct DivState {
+	char enabled;
+	char nop;
+	char regrand;
+	uint nop_pct;
+	uint64_t seed;
+	uint64_t state;
 };
 
 #define BIT(n) ((bits)1 << (n))
@@ -441,6 +451,7 @@ struct Dat {
 /* main.c */
 extern Target T;
 extern char debug['Z'+1];
+extern DivState divstate;
 
 /* util.c */
 typedef enum {
@@ -461,6 +472,9 @@ void vgrow(void *, ulong);
 void strf(char[NString], char *, ...);
 uint32_t intern(char *);
 char *str(uint32_t);
+void divseed(uint64_t);
+int divshouldnop(void);
+int divpick(int);
 int argcls(Ins *, int);
 int isreg(Ref);
 int iscmp(int, int *, int *);

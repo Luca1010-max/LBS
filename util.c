@@ -32,12 +32,52 @@ enum {
 
 Typ *typ;
 Ins insb[NIns], *curi;
+DivState divstate = {
+	.seed = 1,
+};
 
 static void *ptr[NPtr];
 static void **pool = ptr;
 static int nptr = 1;
 
 static Bucket itbl[IMask+1]; /* string interning table */
+
+void
+divseed(uint64_t seed)
+{
+	divstate.seed = seed;
+	divstate.state = seed ? seed : UINT64_C(0x9e3779b97f4a7c15);
+}
+
+static uint64_t
+divrand(void)
+{
+	uint64_t z;
+
+	if (divstate.state == 0)
+		divseed(divstate.seed);
+	divstate.state += UINT64_C(0x9e3779b97f4a7c15);
+	z = divstate.state;
+	z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+	z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
+	return z ^ (z >> 31);
+}
+
+int
+divshouldnop(void)
+{
+	if (!divstate.enabled || !divstate.nop || divstate.nop_pct == 0)
+		return 0;
+	return divrand() % 100 < divstate.nop_pct;
+}
+
+int
+divpick(int n)
+{
+	if (n <= 1 || !divstate.enabled || !divstate.regrand)
+		return 0;
+	return divrand() % n;
+}
 
 uint32_t
 hash(char *s)

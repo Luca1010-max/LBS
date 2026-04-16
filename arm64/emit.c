@@ -691,6 +691,11 @@ arm64_emitfn(Fn *fn, FILE *out)
 		if (lbl || b->npred > 1)
 			fprintf(e->f, "%s%d:\n", T.asloc, id0+b->id);
 		for (i=b->ins; i!=&b->ins[b->nins]; i++)
+			if (i->op != Onop && i->op != Odbgloc) {
+				if (divshouldnop())
+					fputs("\tnop\n", e->f);
+				emitins(i, e);
+			} else
 			emitins(i, e);
 		lbl = 1;
 		switch (b->jmp.type) {
