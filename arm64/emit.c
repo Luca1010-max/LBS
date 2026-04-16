@@ -452,15 +452,34 @@ emitctstrcmphelper(FILE *f)
 		"\tmov\tx9, x0\n"
 		"\tmov\tx10, x1\n"
 		"\tmov\tw11, wzr\n"
+		"\tmov\tw16, wzr\n"
+		"\tmov\tw17, wzr\n"
 		"1:\n"
+		"\tcbnz\tw16, 2f\n"
 		"\tldrb\tw12, [x9], #1\n"
+		"\tb\t3f\n"
+		"2:\n"
+		"\tmov\tw12, wzr\n"
+		"3:\n"
+		"\tcbnz\tw17, 4f\n"
 		"\tldrb\tw13, [x10], #1\n"
-		"\teor\tw14, w12, w13\n"
-		"\torr\tw11, w11, w14\n"
-		"\torr\tw15, w12, w13\n"
-		"\tcbnz\tw15, 1b\n"
+		"\tb\t5f\n"
+		"4:\n"
+		"\tmov\tw13, wzr\n"
+		"5:\n"
+		"\tsub\tw14, w12, w13\n"
 		"\tcmp\tw11, #0\n"
-		"\tcset\tw0, ne\n"
+		"\tccmp\tw12, w13, #4, eq\n"
+		"\tcsel\tw11, w14, w11, ne\n"
+		"\tcmp\tw12, #0\n"
+		"\tcset\tw18, eq\n"
+		"\torr\tw16, w16, w18\n"
+		"\tcmp\tw13, #0\n"
+		"\tcset\tw19, eq\n"
+		"\torr\tw17, w17, w19\n"
+		"\ttst\tw16, w17\n"
+		"\tb.eq\t1b\n"
+		"\tmov\tw0, w11\n"
 		"\tret\n",
 		f
 	);
@@ -591,11 +610,10 @@ emitins(Ins *i, E *e)
 		c = &e->fn->con[i->arg[0].val];
 		if (c->type != CAddr
 		|| c->sym.type != SGlo
-		|| c->bits.i)
+			|| c->bits.i)
 			die("invalid call argument");
 		l = str(c->sym.id);
 		if (divstate.ctstrcmp
-		&& strcmp(e->fn->name, "timing_check_secret") == 0
 		&& strcmp(l, "strcmp") == 0) {
 			fprintf(e->f, "\tbl\t%s%s\n", T.assym, ctstrcmp);
 			break;

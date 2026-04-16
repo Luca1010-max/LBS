@@ -1,0 +1,22 @@
+TARGET timing.base.bin
+prefix=0 guess=AAAAAAAA median_ns=265250 mean_ns=7225419
+prefix=1 guess=SAAAAAAA median_ns=312916 mean_ns=331653
+prefix=2 guess=SEAAAAAA median_ns=363708 mean_ns=380194
+prefix=3 guess=SECXXXXX median_ns=414625 mean_ns=497114
+prefix=4 guess=SECRXXXX median_ns=466750 mean_ns=487474
+prefix=5 guess=SECREXXX median_ns=523458 mean_ns=571703
+prefix=6 guess=SECRETXX median_ns=578792 mean_ns=681889
+prefix=8 guess=SECRETSX median_ns=771375 mean_ns=785990
+spread_ns=506125
+TARGET timing.protected.bin
+prefix=0 guess=AAAAAAAA median_ns=1486375 mean_ns=9227649
+prefix=1 guess=SAAAAAAA median_ns=1475125 mean_ns=1522202
+prefix=2 guess=SEAAAAAA median_ns=1475500 mean_ns=1528272
+prefix=3 guess=SECXXXXX median_ns=1486208 mean_ns=1534102
+prefix=4 guess=SECRXXXX median_ns=1560125 mean_ns=1676151
+prefix=5 guess=SECREXXX median_ns=1655291 mean_ns=2150552
+prefix=6 guess=SECRETXX median_ns=1499583 mean_ns=1549507
+prefix=8 guess=SECRETSX median_ns=1476291 mean_ns=1516052
+spread_ns=180166
+baseline_spread_ns=506125
+protected_spread_ns=180166

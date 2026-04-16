@@ -81,15 +81,34 @@ ___qbe_sc_ctstrcmp:
 	mov	x9, x0
 	mov	x10, x1
 	mov	w11, wzr
+	mov	w16, wzr
+	mov	w17, wzr
 1:
+	cbnz	w16, 2f
 	ldrb	w12, [x9], #1
+	b	3f
+2:
+	mov	w12, wzr
+3:
+	cbnz	w17, 4f
 	ldrb	w13, [x10], #1
-	eor	w14, w12, w13
-	orr	w11, w11, w14
-	orr	w15, w12, w13
-	cbnz	w15, 1b
+	b	5f
+4:
+	mov	w13, wzr
+5:
+	sub	w14, w12, w13
 	cmp	w11, #0
-	cset	w0, ne
+	ccmp	w12, w13, #4, eq
+	csel	w11, w14, w11, ne
+	cmp	w12, #0
+	cset	w18, eq
+	orr	w16, w16, w18
+	cmp	w13, #0
+	cset	w19, eq
+	orr	w17, w17, w19
+	tst	w16, w17
+	b.eq	1b
+	mov	w0, w11
 	ret
 /* end function __qbe_sc_ctstrcmp */
 

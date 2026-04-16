@@ -367,7 +367,7 @@ main(int ac, char *av[])
 			fprintf(hf, "\t%-11s disable randomized register tie-breaks\n", "--no-div-regrand");
 			fprintf(hf, "\t%-11s enable function permutation\n", "--div-funcperm");
 			fprintf(hf, "\t%-11s disable function permutation\n", "--no-div-funcperm");
-			fprintf(hf, "\t%-11s replace strcmp in timing_check_secret with a constant-time helper\n", "--sc-ctstrcmp");
+			fprintf(hf, "\t%-11s replace direct strcmp calls with a constant-time helper when supported\n", "--sc-ctstrcmp");
 			fprintf(hf, "\t%-11s disable the constant-time strcmp mitigation\n", "--no-sc-ctstrcmp");
 			exit(c != 'h');
 		}
