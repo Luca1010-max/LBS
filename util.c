@@ -79,6 +79,14 @@ divpick(int n)
 	return divrand() % n;
 }
 
+int
+divpickfun(int n)
+{
+	if (n <= 1 || !divstate.enabled || !divstate.funcperm)
+		return 0;
+	return divrand() % n;
+}
+
 uint32_t
 hash(char *s)
 {

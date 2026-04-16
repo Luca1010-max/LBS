@@ -35,3 +35,57 @@ Kompilieren (direkter Vergleich):
 ./result/qbe.canary -o result/stack_canary_attack.canary.s demo/stack_canary_attack.ssa
 ./result/qbe.no_canary -o result/stack_canary_attack.no_canary.s demo/stack_canary_attack.ssa
 
+NOP Insert:
+./qbe --diversify --div-nop=35 --div-seed=7 -o result/nop_insert_demo.div.s test/_nop_insert_demo.ssa
+./qbe -o result/nop_insert_demo.base.s test/_nop_insert_demo.ssa
+diff -u result/nop_insert_demo.base.s result/nop_insert_demo.div.s
+rg -n '^\tnop$' result/nop_insert_demo.div.s
+
+No NOP Insert:
+./qbe --diversify --div-nop=35 --no-div-nop -o /tmp/nop.off.s test/_nop_insert_demo.ssa
+cmp -s result/nop_insert_demo.base.s /tmp/nop.off.s && echo identical
+
+Register Assignment Randomization:
+./qbe --diversify --div-regrand --div-seed=7 -o result/regrand_demo.div.s test/_regrand_demo.ssa
+./qbe -o result/regrand_demo.base.s test/_regrand_demo.ssa
+diff -u result/regrand_demo.base.s result/regrand_demo.div.s
+
+No Register Randomization:
+./qbe --diversify --div-regrand --div-seed=7 -o result/regrand_demo.div.s test/_regrand_demo.ssa
+./qbe -o result/regrand_demo.base.s test/_regrand_demo.ssa
+diff -u result/regrand_demo.base.s result/regrand_demo.div.s
+
+Function Permutation:
+./qbe -o result/funcperm_demo.base.s test/_funcperm_demo.ssa
+./qbe --diversify --div-funcperm --div-seed=7 -o result/funcperm_demo.seed7.s test/_funcperm_demo.ssa
+./qbe --diversify --div-funcperm --div-seed=8 -o result/funcperm_demo.seed8.s test/_funcperm_demo.ssa
+rg -n '^\.globl ' result/funcperm_demo.base.s result/funcperm_demo.seed7.s result/funcperm_demo.seed8.s
+diff -u result/funcperm_demo.base.s result/funcperm_demo.seed7.s | sed -n '1,120p'
+
+No Function Permutation:
+./qbe --diversify --div-funcperm --div-seed=7 --no-div-funcperm -o /tmp/funcperm.off.s test/_funcperm_demo.ssa
+cmp -s result/funcperm_demo.base.s /tmp/funcperm.off.s && echo identical
+
+Gleicher Seed / anderer Seed:
+./qbe --diversify --div-funcperm --div-seed=7 -o /tmp/f1.s test/_funcperm_demo.ssa
+./qbe --diversify --div-funcperm --div-seed=7 -o /tmp/f2.s test/_funcperm_demo.ssa
+cmp -s /tmp/f1.s /tmp/f2.s && echo identical
+
+./qbe --diversify --div-funcperm --div-seed=8 -o /tmp/f3.s test/_funcperm_demo.ssa
+cmp -s /tmp/f1.s /tmp/f3.s || echo different
+
+All together: 
+cc result/nop_insert_demo.base.s -o /tmp/nop_base
+cc result/nop_insert_demo.div.s -o /tmp/nop_div
+
+cc result/regrand_demo.base.s -o /tmp/regrand_base
+cc result/regrand_demo.div.s -o /tmp/regrand_div
+/tmp/regrand_base; echo $?
+/tmp/regrand_div; echo $?
+
+cc result/funcperm_demo.base.s -o /tmp/funcperm_base
+cc result/funcperm_demo.seed7.s -o /tmp/funcperm_seed7
+/tmp/funcperm_base; echo $?
+/tmp/funcperm_seed7; echo $?
+
+

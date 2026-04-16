@@ -1,0 +1,653 @@
+Function Permutation Walkthrough
+
+1. Uebersicht
+
+Fuer HW Assignment #3 habe ich ausschliesslich die Diversifizierungs-
+Transformation Function Permutation implementiert.
+
+Ich habe bewusst nicht implementiert:
+
+- Basic Block Randomization
+- Data Randomization
+
+Die Programmlogik bleibt unveraendert. Es wird nur die Reihenfolge kompletter
+Funktionsbloecke im finalen Assembler-Output veraendert.
+
+
+2. Geaenderte Dateien
+
+Die fuer diese Aufgabe relevanten Aenderungen liegen in:
+
+- `all.h`
+- `util.c`
+- `main.c`
+
+Zusaetzlich habe ich fuer die Verifikation eine kleine Demo-Datei angelegt:
+
+- `test/_funcperm_demo.ssa`
+
+Und diese Dokumentation:
+
+- `03function_permutation_walkthrough.txt`
+
+
+3. Relevante Stelle im bestehenden Code
+
+Die zentrale Stelle ist `func(Fn *fn)` in `main.c`.
+
+Vor der Aenderung war die Situation:
+
+- `parse(...)` ruft fuer jede geparste Funktion den Callback `func(...)` auf
+- `func(...)` fuehrt die normalen QBE-Paesse aus
+- danach ruft `func(...)` direkt `T.emitfn(fn, outf)` auf
+- direkt anschliessend wird `/* end function ... */` nach `outf` geschrieben
+
+Die Funktion wurde also unmittelbar in den finalen Output geschrieben.
+
+Die relevanten Stellen dafuer sind jetzt immer noch in `main.c`, aber die
+direkte Ausgabe wird optional gepuffert.
+
+
+4. Was in `all.h` geaendert wurde
+
+Relevante Stellen:
+
+- `all.h:67`
+- `all.h:476`
+
+Ich habe den globalen Diversifizierungszustand erweitert:
+
+- neues Feld `funcperm` in `DivState`
+
+Ausserdem wurde ein neuer Helfer deklariert:
+
+- `divpickfun(int)`
+
+Warum:
+
+Function Permutation braucht einen eigenen Schalter und eine eigene
+deterministische Zufallswahl, die nicht an Register-Randomisierung gekoppelt
+sein soll.
+
+
+5. Was in `util.c` geaendert wurde
+
+Relevante Stelle:
+
+- `util.c:82`
+
+Ich habe `divpickfun(int)` hinzugefuegt.
+
+Die Funktion liefert:
+
+- bei deaktivierter Function Permutation immer `0`
+- bei aktiver Function Permutation einen deterministischen Wert aus
+  `0..n-1`, basierend auf dem gesetzten Seed
+
+Warum:
+
+Die Permutation soll dieselbe Seed-Infrastruktur nutzen wie die bereits
+vorhandenen Diversifizierungsoptionen, aber separat steuerbar bleiben.
+
+
+6. Was in `main.c` geaendert wurde
+
+6.1 Neue Pufferstruktur
+
+Relevante Stellen:
+
+- `main.c:38`
+- `main.c:49`
+
+Ich habe zwei kleine Datenstrukturen eingefuehrt:
+
+- `RawOut`
+- `FunOut`
+
+Zusammen mit:
+
+- `rawout`
+- `funout`
+- `nrawout`
+- `nfunout`
+- `curoutf`
+
+Die Idee ist:
+
+- `rawout` speichert alle nicht-funktionsbezogenen Ausgabesegmente in ihrer
+  urspruenglichen Reihenfolge
+- `funout` speichert die kompletten emittierten Funktionen als separate
+  Textbloecke
+- `curoutf` ist immer das aktuelle Rohsegment, in das Daten- und Debugausgabe
+  geschrieben werden
+
+
+6.2 Temporäre Dateien als Ausgabepuffer
+
+Relevante Stellen:
+
+- `main.c:55`
+- `main.c:68`
+- `main.c:76`
+
+Die Funktions- und Rohsegmente werden mit `tmpfile()` gepuffert.
+
+Das geschieht ueber:
+
+- `newtmpf(void)`
+- `startrawout(void)`
+- `initfuncperm(void)`
+
+Warum diese Strategie:
+
+- `T.emitfn(fn, FILE *)` arbeitet bereits mit `FILE *`
+- dadurch musste ich nicht die Backend-Emitter aendern
+- jede Funktion kann unveraendert in ihren eigenen Textpuffer emittiert werden
+- ebenso koennen Daten- und Debugausgaben in separaten Rohsegmenten gesammelt
+  werden
+
+
+6.3 Umschaltung der aktuellen Ausgabe
+
+Relevante Stelle:
+
+- `main.c:87`
+
+Die Funktion `txtout(void)` liefert:
+
+- bei normalem Verhalten: `outf`
+- bei aktiver Function Permutation: `curoutf`
+
+Damit gehen `data(...)` und `dbgfile(...)` nicht direkt auf den finalen
+Output, sondern in das gerade aktive Rohsegment.
+
+
+6.4 Direkte Emission der Daten wurde ersetzt
+
+Relevante Stellen:
+
+- `main.c:150`
+- `main.c:231`
+
+Vorher schrieben diese Funktionen direkt nach `outf`:
+
+- `data(Dat *d)`
+- `dbgfile(char *fn)`
+
+Jetzt schreiben beide ueber `txtout()`.
+
+Wirkung:
+
+- nicht-funktionsbezogene Ausgabe bleibt an ihrer urspruenglichen Position
+- sie wird nicht mit den Funktionen vermischt
+- sie wird auch nicht selbst permutiert
+
+
+6.5 Funktionsausgabe wird jetzt separat gesammelt
+
+Relevante Stelle:
+
+- `main.c:162`
+
+Die Funktion `func(Fn *fn)` fuehrt weiterhin alle bisherigen QBE-Paesse aus.
+Der entscheidende Unterschied ist nur die letzte Ausgabestufe.
+
+Altes Verhalten:
+
+- `T.emitfn(fn, outf)`
+- `fprintf(outf, "/* end function %s */\\n\\n", fn->name)`
+
+Neues Verhalten bei aktiver Function Permutation:
+
+1. Es wird ein neuer Funktionspuffer mit `newtmpf()` angelegt.
+2. `T.emitfn(fn, funout[nfunout].f)` schreibt die komplette Funktion in diesen
+   Puffer.
+3. Die `end function`-Zeile wird ebenfalls in diesen Funktionspuffer
+   geschrieben.
+4. Der Funktionspuffer wird in `funout` gespeichert.
+5. Danach wird mit `startrawout()` ein neues Rohsegment fuer die Ausgabe nach
+   dieser Funktion begonnen.
+
+Wichtig:
+
+- Der Inhalt der Funktion selbst wird nicht veraendert.
+- Es wird nur der Ausgabezeitpunkt verschoben.
+
+
+6.6 Permutation und spaetere Ausgabe
+
+Relevante Stelle:
+
+- `main.c:114`
+
+Die Funktion `flushfuncperm(void)` fuehrt am Ende die eigentliche Permutation
+aus.
+
+Ablauf:
+
+1. Es wird ein Indexarray `ord` mit `0..nfunout-1` aufgebaut.
+2. Dieses Array wird mit Fisher-Yates per `divpickfun(i)` gemischt.
+3. Anschliessend wird ausgegeben:
+   - zuerst `rawout[0]`
+   - dann die permutierte Funktion `funout[ord[0]]`
+   - dann `rawout[1]`
+   - dann `funout[ord[1]]`
+   - und so weiter
+4. Ganz am Ende wird das letzte Rohsegment `rawout[nfunout]` ausgegeben.
+
+Warum diese Form wichtig ist:
+
+- Rohsegmente behalten ihre urspruengliche Reihenfolge und Position
+- nur die Zuordnung, welche Funktion an welchem Funktionsslot ausgegeben wird,
+  wird veraendert
+- dadurch werden keine Datenbloecke oder Debugausgaben unkontrolliert
+  verschoben
+
+
+6.7 CLI-Option
+
+Relevante Stellen:
+
+- `main.c:241`
+- `main.c:289`
+- `main.c:345`
+
+Neue Option:
+
+- `--div-funcperm`
+- `--no-div-funcperm`
+
+Verhalten:
+
+- setzt `divstate.funcperm = 1`
+- setzt `divstate.enabled = 1`
+
+Die Gegenoption:
+
+- `--no-div-funcperm`
+
+setzt `divstate.funcperm = 0` und schaltet die Funktion Permutation damit
+wieder aus.
+
+Die Seed-Option wird weiterverwendet:
+
+- `--div-seed=N`
+
+Damit gilt:
+
+- gleicher Seed => gleiche Funktionsreihenfolge
+- anderer Seed => oft andere Funktionsreihenfolge
+
+
+6.8 Initialisierung und Flush-Zeitpunkt
+
+Relevante Stellen:
+
+- `main.c:349`
+- `main.c:369`
+
+Direkt nach dem Parsen der Optionen:
+
+- `divseed(divstate.seed)`
+- bei aktiver Function Permutation: `initfuncperm()`
+
+Nach dem Parsen aller Eingabedateien:
+
+- bei aktiver Function Permutation: `flushfuncperm()`
+- danach wie bisher `T.emitfin(outf)`
+
+Warum die Reihenfolge wichtig ist:
+
+- zuerst muessen die gepufferten Nutzerfunktionen in permutierter Reihenfolge
+  ausgegeben werden
+- danach duerfen backend-spezifische Abschlussausgaben folgen, zum Beispiel
+  finale Helper-Funktionen aus `emitfin`
+
+
+7. Was unveraendert bleibt
+
+Ohne aktivierte Function Permutation bleibt das Verhalten unveraendert:
+
+- `func(...)` schreibt direkt nach `outf`
+- keine Pufferung wird genutzt
+- keine Funktionsreihenfolge wird geaendert
+
+Ich habe das explizit geprueft:
+
+`./qbe -o result/funcperm_demo.base.s test/_funcperm_demo.ssa`
+`./qbe --diversify --div-seed=7 -o /tmp/funcperm_demo.noperm.s test/_funcperm_demo.ssa`
+`cmp -s result/funcperm_demo.base.s /tmp/funcperm_demo.noperm.s && echo identical`
+
+In meinem Lauf war das Ergebnis identisch.
+
+Ich habe ausserdem explizit die neue Ausschaltoption geprueft:
+
+`./qbe --diversify --div-funcperm --div-seed=7 --no-div-funcperm -o /tmp/funcperm.off.s test/_funcperm_demo.ssa`
+`cmp -s result/funcperm_demo.base.s /tmp/funcperm.off.s && echo identical`
+
+Auch hier war das Ergebnis in meinem Lauf identisch.
+
+
+8. Build-Kommandos
+
+Normales Bauen:
+
+`cd /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2`
+`make qbe`
+
+Option pruefen:
+
+`./qbe -h | rg 'div-funcperm|div-seed|diversify'`
+
+Standard-Regressionstest:
+
+`make check`
+
+
+9. Demo-Datei fuer die Verifikation
+
+Zur klaren Sichtbarkeit habe ich eine kleine Datei angelegt:
+
+- `test/_funcperm_demo.ssa`
+
+Sie enthaelt vier Funktionen:
+
+- `$fa`
+- `$fb`
+- `$fc`
+- `$main`
+
+`$main` ruft die anderen drei Funktionen auf und addiert ihre Rueckgabewerte.
+
+Dadurch ist:
+
+- die Funktionsreihenfolge im Assembler leicht sichtbar
+- die Korrektheit per Laufzeittest leicht pruefbar
+
+
+10. Konkrete Kommandos zum Testen
+
+10.1 Basisversion ohne Permutation
+
+`./qbe -o result/funcperm_demo.base.s test/_funcperm_demo.ssa`
+
+
+10.2 Permutierte Ausgabe mit Seed 7
+
+`./qbe --diversify --div-funcperm --div-seed=7 -o result/funcperm_demo.seed7.s test/_funcperm_demo.ssa`
+
+
+10.3 Gleicher Seed nochmals
+
+`./qbe --diversify --div-funcperm --div-seed=7 -o result/funcperm_demo.seed7b.s test/_funcperm_demo.ssa`
+
+
+10.4 Anderer Seed
+
+`./qbe --diversify --div-funcperm --div-seed=8 -o result/funcperm_demo.seed8.s test/_funcperm_demo.ssa`
+
+
+10.5 Function Permutation wieder ausschalten
+
+`./qbe --diversify --div-funcperm --div-seed=7 --no-div-funcperm -o /tmp/funcperm.off.s test/_funcperm_demo.ssa`
+`cmp -s result/funcperm_demo.base.s /tmp/funcperm.off.s && echo identical`
+
+
+11. Wie man die Funktionsreihenfolge sichtbar macht
+
+Die Reihenfolge sieht man schnell ueber die Symboldeklarationen:
+
+`rg -n '^\\.globl ' result/funcperm_demo.base.s result/funcperm_demo.seed7.s result/funcperm_demo.seed7b.s result/funcperm_demo.seed8.s`
+
+In meinem Lauf ergab das:
+
+- Basis:
+  - `.globl _fa`
+  - `.globl _fb`
+  - `.globl _fc`
+  - `.globl _main`
+
+- Seed 7:
+  - `.globl _fb`
+  - `.globl _fc`
+  - `.globl _fa`
+  - `.globl _main`
+
+- Seed 7 erneut:
+  - `.globl _fb`
+  - `.globl _fc`
+  - `.globl _fa`
+  - `.globl _main`
+
+- Seed 8:
+  - `.globl _fa`
+  - `.globl _fb`
+  - `.globl _main`
+  - `.globl _fc`
+
+Das zeigt:
+
+- mit Function Permutation aendert sich die Reihenfolge kompletter
+  Funktionsbloecke
+- innerhalb einer Funktion wird nichts veraendert
+
+
+11.1 Konkrete Dateien im Repository
+
+Die erzeugten Beispielausgaben liegen im Repository hier:
+
+- `result/funcperm_demo.base.s`
+- `result/funcperm_demo.seed7.s`
+- `result/funcperm_demo.seed7b.s`
+- `result/funcperm_demo.seed8.s`
+
+Diese vier Dateien kann man direkt im Editor nebeneinander oeffnen.
+
+
+11.2 Woran man es direkt im Assembly sieht
+
+In der Basisversion beginnt die Ausgabe mit `fa`, danach `fb`, dann `fc`,
+danach `main`.
+
+Das sieht man an den Symbolzeilen:
+
+- `result/funcperm_demo.base.s:3` mit `.globl _fa`
+- `result/funcperm_demo.base.s:26` mit `.globl _fb`
+- `result/funcperm_demo.base.s:49` mit `.globl _fc`
+- `result/funcperm_demo.base.s:72` mit `.globl _main`
+
+In der permutierten Seed-7-Variante wurde dieselbe Menge an Funktionen in
+anderer Reihenfolge ausgegeben:
+
+- `result/funcperm_demo.seed7.s:3` mit `.globl _fb`
+- `result/funcperm_demo.seed7.s:26` mit `.globl _fc`
+- `result/funcperm_demo.seed7.s:49` mit `.globl _fa`
+- `result/funcperm_demo.seed7.s:72` mit `.globl _main`
+
+In der zweiten Seed-7-Datei ist die Reihenfolge identisch:
+
+- `result/funcperm_demo.seed7b.s:3` mit `.globl _fb`
+- `result/funcperm_demo.seed7b.s:26` mit `.globl _fc`
+- `result/funcperm_demo.seed7b.s:49` mit `.globl _fa`
+- `result/funcperm_demo.seed7b.s:72` mit `.globl _main`
+
+In der Seed-8-Variante sieht die Reihenfolge wieder anders aus:
+
+- `result/funcperm_demo.seed8.s:3` mit `.globl _fa`
+- `result/funcperm_demo.seed8.s:26` mit `.globl _fb`
+- `result/funcperm_demo.seed8.s:49` mit `.globl _main`
+- `result/funcperm_demo.seed8.s:83` mit `.globl _fc`
+
+Das ist genau die gewuenschte Wirkung:
+
+- gleicher Seed => gleiche Reihenfolge
+- anderer Seed => andere Reihenfolge
+- der Inhalt der Funktionen bleibt unveraendert, nur ihre Position im Output
+  aendert sich
+
+
+11.3 Konkreter Diff-Ausschnitt
+
+Ein direkter Vergleich zwischen Basis und Seed 7:
+
+`diff -u result/funcperm_demo.base.s result/funcperm_demo.seed7.s | sed -n '1,120p'`
+
+Ein charakteristischer Ausschnitt daraus ist:
+
+`-.globl _fa`
+`-_fa:`
+`...`
+` .globl _fb`
+` _fb:`
+`...`
+`+.globl _fa`
+`+_fa:`
+
+Daran sieht man:
+
+- der komplette Block von `_fa` ist nicht verschwunden
+- er wurde auch nicht inhaltlich veraendert
+- er ist nur an eine spaetere Stelle im Ausgabetext verschoben worden
+
+Genau das ist die Kernidee von Function Permutation.
+
+
+12. Reproduzierbarkeit pruefen
+
+Gleicher Seed:
+
+`cmp -s result/funcperm_demo.seed7.s result/funcperm_demo.seed7b.s && echo identical`
+
+In meinem Lauf:
+
+- gleicher Seed => identische Datei
+
+Ich habe zusaetzlich direkt geprueft:
+
+- `same_seed_equal=0`
+
+Das bedeutet, dass `cmp` keinen Unterschied gefunden hat.
+
+
+13. Unterschiedliche Seeds pruefen
+
+Anderer Seed:
+
+`cmp -s result/funcperm_demo.seed7.s result/funcperm_demo.seed8.s || echo different`
+
+In meinem Lauf:
+
+- anderer Seed => unterschiedliche Datei
+
+Direkter Check:
+
+- `diff_seed_equal=1`
+
+Das bedeutet, dass `cmp` einen Unterschied gefunden hat.
+
+
+14. Gueltigkeit der Assembly pruefen
+
+Die Assembly bleibt gueltig, wenn sie sich linken und ausfuehren laesst.
+
+Basisversion:
+
+`cc result/funcperm_demo.base.s -o /tmp/funcperm_demo.base`
+`/tmp/funcperm_demo.base`
+`echo $?`
+
+Permutierte Version:
+
+`cc result/funcperm_demo.seed7.s -o /tmp/funcperm_demo.seed7`
+`/tmp/funcperm_demo.seed7`
+`echo $?`
+
+In meinem Lauf war der Exit-Code in beiden Faellen:
+
+- `66`
+
+Das ist korrekt, weil:
+
+- `fa()` liefert `11`
+- `fb()` liefert `22`
+- `fc()` liefert `33`
+- `main()` liefert `11 + 22 + 33 = 66`
+
+Damit ist gezeigt:
+
+- die permutierte Ausgabe bleibt gueltiger Assembler
+- externe und interne Funktionsreferenzen bleiben korrekt
+- die Programmlogik aendert sich nicht
+
+
+15. Build- und Regressionstest
+
+Ich habe zusaetzlich den normalen Repo-Testlauf ausgefuehrt:
+
+`make check`
+
+Ergebnis in meinem Lauf:
+
+- erfolgreich
+- `All is fine!`
+
+Das ist wichtig, weil es zeigt, dass das Standardverhalten ohne aktivierte
+Function Permutation weiterhin intakt ist.
+
+
+16. Warum diese Implementierung konservativ ist
+
+Die Implementierung aendert nur:
+
+- den Zeitpunkt, wann emittierte Funktionsbloecke in den finalen Output
+  geschrieben werden
+- die Reihenfolge, in der diese vollstaendigen Funktionsbloecke spaeter
+  ausgegeben werden
+
+Die Implementierung aendert nicht:
+
+- Instruktionen innerhalb einer Funktion
+- Labels innerhalb einer Funktion
+- Dateninhalte
+- die QBE-Optimierungspipeline
+- ABI-Logik
+- Registerallokation
+- Basic-Block-Reihenfolgen innerhalb einer Funktion
+
+Nicht-funktionsbezogene Ausgabe wird nicht mit den Funktionen vermischt,
+sondern in eigenen Rohsegmenten gesammelt und an ihren urspruenglichen
+Positionen wieder ausgegeben.
+
+
+17. Kurzfazit Datei fuer Datei
+
+`all.h`
+
+- neues Feld `funcperm` in `DivState`
+- neuer Prototyp `divpickfun(int)`
+
+`util.c`
+
+- neue seed-gesteuerte Auswahlfunktion `divpickfun(int)`
+
+`main.c`
+
+- Pufferung von Rohsegmenten und Funktionsbloecken
+- neue CLI-Option `--div-funcperm`
+- Fisher-Yates-Permutation der Funktionsbloecke
+- spaetere Ausgabe in permutierter Reihenfolge
+
+`test/_funcperm_demo.ssa`
+
+- kleine Demo mit mehreren Funktionen fuer die Sichtpruefung
+
+
+18. Abschluss
+
+Die Implementierung erfuellt die Anforderungen fuer Function Permutation:
+
+- nur komplette Funktionsbloecke werden umgeordnet
+- die Reihenfolge ist seed-gesteuert und reproduzierbar
+- ohne Aktivierung bleibt das alte Verhalten gleich
+- die Assembly bleibt gueltig
+- die Programmlogik bleibt erhalten

@@ -1,0 +1,25 @@
+data $secret = { b "SECRETSX", b 0 }
+
+export function w $timing_check_secret(l %guess) {
+@start
+	%i =l alloc4 4
+	%diff =l alloc4 4
+	storew 0, %i
+	storew 0, %diff
+@loop
+	%iv =w loadw %i
+	%more =w csltw %iv, 200000
+	jnz %more, @body, @end
+@body
+	%r =w call $strcmp(l %guess, l $secret)
+	%old =w loadw %diff
+	%new =w or %old, %r
+	storew %new, %diff
+	%next =w add %iv, 1
+	storew %next, %i
+	jmp @loop
+@end
+	%done =w loadw %diff
+	%ok =w ceqw %done, 0
+	ret %ok
+}

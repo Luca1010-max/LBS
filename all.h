@@ -68,6 +68,8 @@ struct DivState {
 	char enabled;
 	char nop;
 	char regrand;
+	char funcperm;
+	char ctstrcmp;
 	uint nop_pct;
 	uint64_t seed;
 	uint64_t state;
@@ -475,6 +477,7 @@ char *str(uint32_t);
 void divseed(uint64_t);
 int divshouldnop(void);
 int divpick(int);
+int divpickfun(int);
 int argcls(Ins *, int);
 int isreg(Ref);
 int iscmp(int, int *, int *);

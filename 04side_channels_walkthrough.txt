@@ -1,0 +1,649 @@
+Side Channels Walkthrough
+
+1. Overview
+
+Ich habe eine Timing-basierte Side-Channel-Demo mit drei Teilen umgesetzt:
+
+- ein verwundbares Zielprogramm mit einem bewusst timing-anfälligen Secret-
+  Check
+- ein Angriffsprogramm, das das Secret ueber Timing rekonstruiert
+- eine QBE-Mitigation, die genau dieses Timing-Leak fuer die Demo abschwaecht
+
+Die gewaehlte Demo ist bewusst einfach:
+
+- `timing_check_secret` ruft sehr oft `strcmp` auf
+- `strcmp` beendet intern frueh beim ersten Mismatch
+- dadurch haengt die Laufzeit vom korrekt geratenen Praefix ab
+- der Angriff misst diese Unterschiede und rekonstruiert das Secret Byte fuer
+  Byte
+
+Ich habe absichtlich kein Spectre-artiges Szenario gebaut. Fuer diese
+Aufgabe war eine robuste, lauffaehige und klar nachvollziehbare Timing-Demo
+die deutlich bessere Wahl.
+
+
+2. Was genau implementiert wurde
+
+Neue Dateien:
+
+- `timing_target.c`
+- `timing_target_driver.c`
+- `timing_attack.py`
+- `test/_timing_sidechannel.ssa`
+- `side_channels_walkthrough.txt`
+
+Geaenderte QBE-Dateien:
+
+- `all.h`
+- `main.c`
+- `arm64/emit.c`
+
+Wichtige Einordnung:
+
+- Die eigentliche QBE-Defense sitzt in `arm64/emit.c`
+- die Mitigation ist bewusst konservativ und auf die Demo-Funktion
+  `timing_check_secret` zugeschnitten
+- in dieser Umgebung war `cproc` nicht installiert
+- deshalb habe ich die eigentliche Defense praktisch mit einer SSA-
+  Spiegelversion der C-Funktion getestet
+- die C-Dateien sind trotzdem vollstaendig vorhanden und fuer eine lokale
+  `cproc -> qbe -> cc`-Pipeline vorbereitet
+
+
+3. Attack Setup
+
+3.1 Verwundbares Zielprogramm
+
+Die verwundbare C-Version steht in `timing_target.c`.
+
+Relevante Stelle:
+
+- `timing_target.c:10`
+
+Die Funktion
+
+- `timing_check_secret(const char *guess)`
+
+enthaelt:
+
+- ein fest eingebautes Secret `SECRETSX`
+- eine Schleife mit `Repeat = 200000`
+- in jeder Iteration einen Aufruf von `strcmp(guess, secret)`
+- die OR-Verknuepfung aller Rueckgabewerte
+
+Der eigentliche Leak entsteht dadurch, dass `strcmp` beim ersten ungleichen
+Byte abbricht. Wenn das geraetene Praefix laenger korrekt ist, braucht der
+innere Vergleich mehr Zeit. Da dieser Vergleich 200000 Mal wiederholt wird,
+ist das Signal fuer einen Timing-Angriff deutlich verstaerkt.
+
+Das gleiche Vergleichsmuster habe ich fuer die In-Environment-QBE-Tests in
+`test/_timing_sidechannel.ssa` nachgebaut:
+
+- `test/_timing_sidechannel.ssa:3`
+- `test/_timing_sidechannel.ssa:14`
+
+
+3.2 Welche geheime Information geleakt wird
+
+Das feste Secret ist:
+
+- `SECRETSX`
+
+Fuer die eigentliche Rekonstruktion in den Messlaeufen habe ich bewusst nur
+die ersten 6 Stellen angegriffen:
+
+- `SECRET`
+
+Der Grund ist pragmatisch:
+
+- damit bleiben die Testlaeufe kuerzer
+- das Leak ist bereits klar sichtbar
+- die Mitigation laesst sich so sauber mit denselben Parametern vor und nach
+  dem Schutz vergleichen
+
+
+3.3 Warum zusaetzlich ein Driver existiert
+
+`timing_target_driver.c` ist nur fuer die lokale Verifikation in dieser
+Umgebung da.
+
+Relevante Stelle:
+
+- `timing_target_driver.c:6`
+
+Der Driver:
+
+- deklariert `timing_check_secret` als externe Funktion
+- liest Guesses im Loop von `stdin`
+- gibt pro Guess `1` oder `0` aus
+- bleibt dabei als Prozess bestehen
+
+Warum das wichtig ist:
+
+- der Angriff misst dadurch nur noch die Bearbeitungszeit pro Guess
+- das grosse Prozessstart-Rauschen faellt weg
+- die Timing-Auswertung wird deutlich stabiler
+
+Ohne diesen persistenten Modus war der Angriff in der Sandbox deutlich
+rauschiger.
+
+
+4. Attack Implementation
+
+Die Angriffslogik steckt in `timing_attack.py`.
+
+Relevante Stellen:
+
+- `timing_attack.py:8`
+- `timing_attack.py:19`
+- `timing_attack.py:42`
+
+Der Angriff arbeitet so:
+
+1. Zielprozess einmal starten
+2. fuer jede Position alle Kandidaten aus einem Alphabet testen
+3. pro Kandidat mehrere Messungen durchfuehren
+4. Median und Mittelwert berechnen
+5. den Kandidaten mit dem groessten Median waehlen
+6. zum naechsten Byte weitergehen
+
+Die Kernidee ist:
+
+- je laenger das korrekte Praefix ist, desto spaeter endet `strcmp`
+- dadurch steigt die Antwortzeit
+- der Median ist robuster gegen Ausreisser als eine Einzelmessung
+
+Das Skript gibt pro Position aus:
+
+- aktuelle Position
+- besten Kandidaten
+- Median in Nanosekunden
+- Mittelwert
+- bisher rekonstruiertes Secret
+- die drei besten Kandidaten
+
+
+5. QBE Defense
+
+5.1 Grundidee der Defense
+
+Ich habe keine fragile Mustererkennung fuer beliebige Early-Return-Loops
+gebaut.
+
+Stattdessen habe ich eine konservative und fuer die Demo robuste Mitigation
+implementiert:
+
+- wenn in der Funktion `timing_check_secret` ein Aufruf von `strcmp`
+  emittiert wird
+- und die neue Option `--sc-ctstrcmp` aktiv ist
+- dann ersetzt QBE diesen Call im finalen ARM64-Assembler durch einen
+  konstanten Helper `__qbe_sc_ctstrcmp`
+
+Damit verschwindet in genau der demonstrierten Leak-Stelle die
+praefixabhaengige fruehe Terminierung von `strcmp`.
+
+
+5.2 Geaenderte QBE-Dateien
+
+`all.h`
+
+- `all.h` wurde um das Feld `ctstrcmp` im globalen Zustand erweitert
+
+`main.c`
+
+- neue CLI-Optionen:
+  - `--sc-ctstrcmp`
+  - `--no-sc-ctstrcmp`
+
+Relevante Stellen:
+
+- `main.c:241`
+- `main.c:308`
+- `main.c:370`
+
+`arm64/emit.c`
+
+- neuer Helper-Name `__qbe_sc_ctstrcmp`
+- neue Helper-Emission in `emitctstrcmphelper(...)`
+- neue Call-Umlenkung im `Ocall`-Fall
+
+Relevante Stellen:
+
+- `arm64/emit.c:21`
+- `arm64/emit.c:442`
+- `arm64/emit.c:597`
+
+
+5.3 Wie die Defense im Backend funktioniert
+
+Die eigentliche Umschaltung passiert in `arm64/emit.c` im `Ocall`-Zweig:
+
+- `arm64/emit.c:597`
+- `arm64/emit.c:600`
+
+Die Bedingung ist:
+
+- `divstate.ctstrcmp` muss aktiv sein
+- die aktuelle Funktion muss `timing_check_secret` heissen
+- das aufgerufene Symbol muss `strcmp` sein
+
+Wenn das zutrifft, emittiert QBE:
+
+- `bl ___qbe_sc_ctstrcmp`
+
+anstatt:
+
+- `bl _strcmp`
+
+Genau das sieht man auch im erzeugten Assembler:
+
+- ungeschuetzt in `result/timing_sidechannel.base.s:33`:
+  `bl _strcmp`
+- geschuetzt in `result/timing_sidechannel.protected.s:33`:
+  `bl ___qbe_sc_ctstrcmp`
+
+
+5.4 Was der Helper macht
+
+Der Helper steht in `arm64/emit.c:442` und wird ueber `arm64_emitfin(...)`
+am Dateiende emittiert:
+
+- `arm64/emit.c:473`
+- `arm64/emit.c:476`
+
+Seine Logik ist:
+
+1. beide Zeiger kopieren
+2. beide Strings Byte fuer Byte bis zum gemeinsamen Ende lesen
+3. alle Byte-Unterschiede in einem Akkumulator sammeln
+4. nicht beim ersten Mismatch abbrechen
+5. am Ende nur `0` oder `1` zurueckgeben
+
+Der Helper ist also fuer Equality-Checks geschrieben, nicht fuer die volle
+lexikographische Semantik von `strcmp`.
+
+Das ist eine bewusst enge, ehrliche Entscheidung:
+
+- fuer die Demo-Funktion ist das semantisch passend
+- fuer generische `strcmp`-Nutzung waere eine globale Ersetzung riskanter
+
+
+5.5 Was die Defense gerade nicht ist
+
+Die Defense ist nicht:
+
+- eine vollstaendig generische Side-Channel-Elimination fuer beliebigen C-Code
+- eine Optimierung, die automatisch alle geheimnisabhaengigen Kontrollfluesse
+  findet
+- eine vollstaendig formale Constant-Time-Garantie
+
+Sie ist:
+
+- eine gezielte Mitigation fuer die demonstrierte Leak-Stelle
+- im QBE-Backend implementiert
+- fuer die Demo praktisch wirksam
+
+
+6. Build Commands
+
+6.1 QBE bauen
+
+`cd /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2`
+`make qbe`
+
+Option pruefen:
+
+`./qbe -h | sed -n '1,24p'`
+
+
+6.2 Verwundbare C-Datei direkt mit dem System-Compiler bauen
+
+Das ist kein QBE-Defense-Test, sondern nur ein Build- und Leak-Check fuer die
+bereitgestellte C-Datei:
+
+`cc timing_target.c -o result/timing_target.clang`
+
+
+6.3 Lokale QBE-Testpipeline fuer die ungeschuetzte Version
+
+`./qbe -o result/timing_sidechannel.base.s test/_timing_sidechannel.ssa`
+`cc timing_target_driver.c result/timing_sidechannel.base.s -o result/timing_sidechannel.base`
+
+
+6.4 Lokale QBE-Testpipeline fuer die geschuetzte Version
+
+`./qbe --sc-ctstrcmp -o result/timing_sidechannel.protected.s test/_timing_sidechannel.ssa`
+`cc timing_target_driver.c result/timing_sidechannel.protected.s -o result/timing_sidechannel.protected`
+
+
+6.5 Lokale cproc-Reproduktionskommandos
+
+Diese Kommandos konnte ich hier nicht ausfuehren, weil `cproc` in der
+Umgebung nicht installiert war. Sie sind aber die beabsichtigte lokale
+Pipeline:
+
+Ungeschuetzt:
+
+`cproc -b qbe timing_target.c | ./qbe -o result/timing_target.cproc.base.s -`
+`cc result/timing_target.cproc.base.s -o result/timing_target.cproc.base`
+
+Geschuetzt:
+
+`cproc -b qbe timing_target.c | ./qbe --sc-ctstrcmp -o result/timing_target.cproc.protected.s -`
+`cc result/timing_target.cproc.protected.s -o result/timing_target.cproc.protected`
+
+
+7. Run Commands
+
+7.1 Assembly-Nachweis der Mitigation
+
+`rg -n 'strcmp|__qbe_sc_ctstrcmp' result/timing_sidechannel.base.s result/timing_sidechannel.protected.s`
+
+In meinem Lauf:
+
+- `result/timing_sidechannel.base.s` enthaelt genau einen `bl _strcmp`
+- `result/timing_sidechannel.protected.s` enthaelt keinen `bl _strcmp`
+- `result/timing_sidechannel.protected.s` enthaelt genau einen
+  `bl ___qbe_sc_ctstrcmp`
+
+
+7.2 Ausschalten der Defense pruefen
+
+`./qbe --sc-ctstrcmp --no-sc-ctstrcmp -o /tmp/timing_sidechannel.off.s test/_timing_sidechannel.ssa`
+`cmp -s result/timing_sidechannel.base.s /tmp/timing_sidechannel.off.s && echo identical`
+
+In meinem Lauf war das Ergebnis identisch.
+
+
+7.3 Angriff gegen die ungeschuetzte Version
+
+`python3 timing_attack.py ./result/timing_sidechannel.base --samples 21 --length 6 --alphabet SECRTXAB`
+
+
+7.4 Angriff gegen die geschuetzte Version
+
+`python3 timing_attack.py ./result/timing_sidechannel.protected --samples 21 --length 6 --alphabet SECRTXAB`
+
+
+7.5 Optionaler Leak-Check direkt auf der C-Datei
+
+`python3 timing_attack.py ./result/timing_target.clang --samples 21 --length 6 --alphabet SECRTXAB`
+
+
+8. Verification
+
+8.1 Woran man erkennt, dass der Angriff auf die ungeschuetzte Version
+funktioniert
+
+Im erfolgreichen Fall steigt das rekonstruierte Praefix stabil an:
+
+- `S`
+- `SE`
+- `SEC`
+- `SECR`
+- `SECRE`
+- `SECRET`
+
+Genau das habe ich in zwei Laeufen beobachtet.
+
+
+8.2 Woran man erkennt, dass die Defense greift
+
+Im geschuetzten Fall verschwindet die klare Praefix-Staffelung.
+
+Stattdessen sieht man:
+
+- eher gleichfoermige Messwerte
+- wechselnde Gewinner zwischen den Kandidaten
+- eine am Ende falsche Rekonstruktion
+
+Wichtig ist:
+
+- die geschuetzte Variante muss nicht zwingend fuer immer mathematisch
+  unangreifbar sein
+- aber derselbe Angriff mit denselben Parametern sollte deutlich schlechter
+  funktionieren
+
+Genau das war hier der Fall.
+
+
+9. Example Results
+
+9.1 Erfolgreicher Angriff auf die ungeschuetzte QBE-Version
+
+Beobachteter Lauf:
+
+`python3 timing_attack.py ./result/timing_sidechannel.base --samples 21 --length 6 --alphabet SECRTXAB`
+
+Ausgabe:
+
+- `pos=0 best=S ... secret_so_far=S`
+- `pos=1 best=E ... secret_so_far=SE`
+- `pos=2 best=C ... secret_so_far=SEC`
+- `pos=3 best=R ... secret_so_far=SECR`
+- `pos=4 best=E ... secret_so_far=SECRE`
+- `pos=5 best=T ... secret_so_far=SECRET`
+- `recovered=SECRET`
+
+Zweiter Lauf mit denselben Parametern:
+
+- erneut `recovered=SECRET`
+
+Das ist ein klarer erfolgreicher Leak.
+
+
+9.2 Erfolgreicher Angriff auf die direkte C-Binary
+
+Beobachteter Lauf:
+
+`python3 timing_attack.py ./result/timing_target.clang --samples 21 --length 6 --alphabet SECRTXAB`
+
+Ausgabe:
+
+- `recovered=SECRET`
+
+Das zeigt, dass auch die bereitgestellte C-Demo selbst praktisch leakbar ist.
+
+
+9.3 Deutlich schlechterer Angriff auf die geschuetzte Version
+
+Beobachteter Lauf:
+
+`python3 timing_attack.py ./result/timing_sidechannel.protected --samples 31 --length 6 --alphabet SECRTXAB`
+
+Ausgabe:
+
+- `pos=0 best=A ...`
+- `pos=1 best=A ...`
+- `pos=2 best=C ...`
+- `pos=3 best=X ...`
+- `pos=4 best=C ...`
+- `pos=5 best=B ...`
+- `recovered=AACXCB`
+
+Zweiter Lauf:
+
+- `recovered=CTTESA`
+
+Beide Ergebnisse sind falsch und variieren deutlich. Das ist genau die
+beobachtete Mitigationswirkung.
+
+
+9.4 Beispiel fuer den Timing-Unterschied
+
+Im erfolgreichen ungeschuetzten Lauf lagen die Mediane grob bei:
+
+- `S` auf Position 0: etwa `313500 ns`
+- `SE` auf Position 1: etwa `376541 ns`
+- `SEC` auf Position 2: etwa `416250 ns`
+- `SECR` auf Position 3: etwa `484292 ns`
+- `SECRE` auf Position 4: etwa `552375 ns`
+- `SECRET` auf Position 5: etwa `630084 ns`
+
+Das ist die typische ansteigende Treppe, die das Praefix-Leak zeigt.
+
+Im geschuetzten Lauf mit denselben groben Einstellungen lagen viele Kandidaten
+dagegen nahe beieinander, oft im Bereich um `1.0 ms`, ohne dieselbe klare
+Praefix-Treppe.
+
+
+10. How to Verify That It Really Works
+
+10.1 Assembly-Check
+
+Kommando:
+
+`rg -n 'strcmp|__qbe_sc_ctstrcmp' result/timing_sidechannel.base.s result/timing_sidechannel.protected.s`
+
+Erwartete Beobachtung:
+
+- ungeschuetzt: `bl _strcmp`
+- geschuetzt: `bl ___qbe_sc_ctstrcmp`
+
+Interpretation:
+
+- die Mitigation ist im eigentlichen Maschinencode angekommen
+
+
+10.2 Leak-Check auf der ungeschuetzten Version
+
+Kommando:
+
+`python3 timing_attack.py ./result/timing_sidechannel.base --samples 21 --length 6 --alphabet SECRTXAB`
+
+Erwartete Beobachtung:
+
+- das rekonstruierte Ergebnis wird `SECRET`
+
+Interpretation:
+
+- die ungeschuetzte Version ist praktisch timing-angreifbar
+
+
+10.3 Mitigation-Check auf der geschuetzten Version
+
+Kommando:
+
+`python3 timing_attack.py ./result/timing_sidechannel.protected --samples 21 --length 6 --alphabet SECRTXAB`
+
+Erwartete Beobachtung:
+
+- das rekonstruierte Ergebnis ist instabil und falsch
+
+Interpretation:
+
+- derselbe Angriff mit denselben Parametern funktioniert nicht mehr sauber
+
+
+10.4 Schalter wieder ausschalten
+
+Kommando:
+
+`./qbe --sc-ctstrcmp --no-sc-ctstrcmp -o /tmp/timing_sidechannel.off.s test/_timing_sidechannel.ssa`
+`cmp -s result/timing_sidechannel.base.s /tmp/timing_sidechannel.off.s && echo identical`
+
+Erwartete Beobachtung:
+
+- `identical`
+
+Interpretation:
+
+- die Defense ist wirklich ein separater, kontrollierbarer Schalter
+
+
+11. Security Discussion
+
+11.1 Offline-Ansatz
+
+Gegen den gezeigten Offline-Ansatz mit wiederholten Messungen pro Kandidat
+ist die Mitigation fuer die Demo wirksam. Der gleiche Angriff, der die
+ungeschuetzte Version reproduzierbar bis `SECRET` rekonstruiert, liefert gegen
+die geschuetzte Version keine stabile richtige Rekonstruktion mehr.
+
+
+11.2 Online-Ansatz
+
+Auch bei einem Online-Ansatz mit laufender Interaktion hilft die Defense fuer
+diese Demo, weil das praefixabhaengige fruehe Ende von `strcmp` durch einen
+gleichfoermigeren Vergleich ersetzt wird.
+
+
+11.3 Sehr viele Messungen
+
+Ich behaupte nicht, dass die Defense eine vollstaendige mathematische
+Elimination aller Restleckage ist.
+
+Moegliche Restpunkte:
+
+- Betriebssystemrauschen
+- Cache- und Mikrounterschiede
+- unterschiedliche Stringlaengen, falls das Protokoll sie zulaesst
+- andere, hier nicht geschuetzte Vergleichspfade
+
+Mit sehr viel mehr Messaufwand koennte ein Angreifer je nach Umgebung
+langfristig wieder kleine Effekte finden. Diese Loesung ist daher eine
+Mitigation, keine perfekte universelle Constant-Time-Garantie.
+
+
+11.4 Vollstaendig oder teilweise
+
+Die Defense ist nur teilweise und gezielt:
+
+- sie schuetzt die konkrete Demo-Funktion
+- sie ersetzt dort `strcmp` durch einen geeigneten Helper
+- sie schuetzt nicht automatisch jeden beliebigen geheimnisabhaengigen
+  Kontrollfluss im gesamten Programm
+
+
+11.5 Restleckage
+
+Die wichtigste verbleibende Restleckage ist:
+
+- die Laenge kann bei ungeeigneter Nutzung weiterhin eine Rolle spielen
+- die Defense ist auf `timing_check_secret` beschraenkt
+- andere Funktionen mit aehnlichem Muster bleiben unberuehrt
+
+Fuer genau die demonstrierte Leak-Struktur ist sie aber praktisch wirksam.
+
+
+12. Build and Test Summary
+
+Erfolgreich getestet in dieser Umgebung:
+
+- `make qbe`
+- `make check`
+- Build der QBE-basierten ungeschuetzten Testversion
+- Build der QBE-basierten geschuetzten Testversion
+- erfolgreicher Timing-Angriff auf die ungeschuetzte Version
+- deutlich schlechterer Angriff auf die geschuetzte Version
+- Build der direkten C-Datei mit `cc`
+- erfolgreicher Leak-Check auf der direkten C-Datei
+
+Nicht direkt ausfuehrbar in dieser Umgebung:
+
+- die eigentliche `cproc -> qbe`-Kette
+
+Grund:
+
+- `cproc` war hier nicht installiert
+
+Dafuer habe ich die lokale Reproduktion mit einer SSA-Spiegelversion plus
+Driver umgesetzt und die entsprechenden lokalen `cproc`-Kommandos fuer dein
+System dokumentiert.
+
+
+13. Abschluss
+
+Die Loesung ist bewusst pragmatisch:
+
+- einfacher Timing-Leak ueber wiederholtes `strcmp`
+- robuster Messangriff
+- gezielte QBE-Mitigation im ARM64-Backend
+- praktische Vorher/Nachher-Verifikation
+
+Die Mitigation ist ehrlich eingeordnet:
+
+- sie reduziert den gezeigten Angriff deutlich
+- sie ist nicht vollstaendig generisch
+- sie ist fuer die konkrete Demo aber wirksam und nachvollziehbar
+

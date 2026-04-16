@@ -1,0 +1,24 @@
+export function w $fa() {
+@start
+	ret 11
+}
+
+export function w $fb() {
+@start
+	ret 22
+}
+
+export function w $fc() {
+@start
+	ret 33
+}
+
+export function w $main() {
+@start
+	%a =w call $fa()
+	%b =w call $fb()
+	%c =w call $fc()
+	%ab =w add %a, %b
+	%r =w add %ab, %c
+	ret %r
+}

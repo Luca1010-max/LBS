@@ -215,7 +215,9 @@ Es wurden neue Long-Options eingefuehrt:
 - `--no-diversify`
 - `--div-seed=N`
 - `--div-nop=N`
+- `--no-div-nop`
 - `--div-regrand`
+- `--no-div-regrand`
 
 Wie die Optionen funktionieren:
 
@@ -232,8 +234,14 @@ Wie die Optionen funktionieren:
   aktiviert NOP Insertion mit `N` Prozent Wahrscheinlichkeit
   zulaessiger Bereich: `0..100`
 
+- `--no-div-nop`
+  deaktiviert NOP Insertion wieder und setzt die NOP-Wahrscheinlichkeit auf `0`
+
 - `--div-regrand`
   aktiviert Register Assignment Randomization
+
+- `--no-div-regrand`
+  deaktiviert Register Assignment Randomization wieder
 
 Wichtige Semantik:
 
@@ -450,12 +458,23 @@ ein `nop`.
 `./qbe --diversify --div-seed=1 --div-regrand -o /tmp/queen.r1.s test/queen.ssa`
 
 
-13.4 Beide Techniken zusammen
+13.4 Techniken gezielt wieder deaktivieren
+
+NOP Insertion wieder ausschalten:
+
+`./qbe --diversify --div-nop=35 --no-div-nop -o /tmp/echo.no_nop.s test/echo.ssa`
+
+Register-Randomisierung wieder ausschalten:
+
+`./qbe --diversify --div-regrand --no-div-regrand -o /tmp/queen.no_regrand.s test/queen.ssa`
+
+
+13.5 Beide Techniken zusammen
 
 `./qbe --diversify --div-seed=7 --div-nop=35 --div-regrand -o /tmp/echo.div.s test/echo.ssa`
 
 
-13.5 Konkrete Demo-Tests im Repository
+13.6 Konkrete Demo-Tests im Repository
 
 Zusatzlich zu den vorhandenen Repo-Tests habe ich zwei kleine manuelle
 SSA-Demos in `test/` angelegt:
@@ -519,6 +538,13 @@ In meinem Lauf ergab das:
 
 Das zeigt, dass unterschiedliche Seeds bereits fuer die NOP-Insertion sichtbar
 andere Ausgabe erzeugen.
+
+Die Ausschaltoption funktioniert ebenfalls:
+
+`./qbe --diversify --div-nop=35 --no-div-nop -o /tmp/nop.off.s test/_nop_insert_demo.ssa`
+`cmp -s result/nop_insert_demo.base.s /tmp/nop.off.s && echo identical`
+
+In meinem Lauf war das Ergebnis identisch.
 
 
 16. Konkretes NOP-Beispiel aus der Demo-Datei
@@ -593,6 +619,13 @@ beispielsweise:
 
 Das ist wichtig, weil hier keine NOPs den Unterschied verursachen, sondern die
 tatsaechliche Registerzuweisung.
+
+Die Ausschaltoption funktioniert ebenfalls:
+
+`./qbe --diversify --div-regrand --no-div-regrand -o /tmp/regrand.off.s test/_regrand_demo.ssa`
+`cmp -s result/regrand_demo.base.s /tmp/regrand.off.s && echo identical`
+
+In meinem Lauf war das Ergebnis identisch.
 
 
 18. Konkretes Register-Randomisierungsbeispiel aus der Demo-Datei

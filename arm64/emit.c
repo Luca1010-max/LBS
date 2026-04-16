@@ -18,6 +18,7 @@ static char canaryinit[] = "__qbe_stack_canary_init";
 static char canarycheck[] = "__qbe_stack_canary_check";
 static char canaryfail[] = "__qbe_stack_canary_fail";
 #endif
+static char ctstrcmp[] = "__qbe_sc_ctstrcmp";
 
 #define CMP(X) \
 	X(Cieq,       "eq") \
@@ -437,10 +438,42 @@ emitcanaryhelpers(FILE *f)
 #endif
 }
 
+static void
+emitctstrcmphelper(FILE *f)
+{
+	Lnk lnk;
+
+	if (!divstate.ctstrcmp)
+		return;
+	memset(&lnk, 0, sizeof lnk);
+	lnk.align = 4;
+	emitfnlnk(ctstrcmp, &lnk, f);
+	fputs(
+		"\tmov\tx9, x0\n"
+		"\tmov\tx10, x1\n"
+		"\tmov\tw11, wzr\n"
+		"1:\n"
+		"\tldrb\tw12, [x9], #1\n"
+		"\tldrb\tw13, [x10], #1\n"
+		"\teor\tw14, w12, w13\n"
+		"\torr\tw11, w11, w14\n"
+		"\torr\tw15, w12, w13\n"
+		"\tcbnz\tw15, 1b\n"
+		"\tcmp\tw11, #0\n"
+		"\tcset\tw0, ne\n"
+		"\tret\n",
+		f
+	);
+	if (!T.apple)
+		elf_emitfnfin(ctstrcmp, f);
+	fputs("/* end function __qbe_sc_ctstrcmp */\n\n", f);
+}
+
 void
 arm64_emitfin(FILE *f)
 {
 	emitcanaryhelpers(f);
+	emitctstrcmphelper(f);
 	if (T.apple)
 		macho_emitfin(f);
 	else
@@ -561,6 +594,12 @@ emitins(Ins *i, E *e)
 		|| c->bits.i)
 			die("invalid call argument");
 		l = str(c->sym.id);
+		if (divstate.ctstrcmp
+		&& strcmp(e->fn->name, "timing_check_secret") == 0
+		&& strcmp(l, "strcmp") == 0) {
+			fprintf(e->f, "\tbl\t%s%s\n", T.assym, ctstrcmp);
+			break;
+		}
 		p = l[0] == '"' ? "" : T.assym;
 		fprintf(e->f, "\tbl\t%s%s\n", p, l);
 		break;
