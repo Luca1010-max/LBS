@@ -15,9 +15,14 @@ SRCALL   = $(OBJ:.o=.c)
 
 CC       = cc
 CFLAGS   = -std=c99 -g -Wall -Wextra -Wpedantic
+CANARY   ?= 1
+CFLAGS   += -DARM64_STACK_CANARY=$(CANARY)
 
 qbe: $(OBJ)
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
+
+tools/genasm: tools/genasm.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@
 
 .c.o:
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -63,7 +68,7 @@ uninstall:
 	rm -f "$(DESTDIR)$(BINDIR)/qbe"
 
 clean:
-	rm -f *.o */*.o qbe
+	rm -f *.o */*.o qbe tools/genasm
 
 clean-gen: clean
 	rm -f config.h

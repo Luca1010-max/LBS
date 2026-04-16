@@ -16,3 +16,22 @@ Invoke make in this directory to create the executable
 file qbe.  Install using 'make install', the standard
 DESTDIR and PREFIX environment variables are supported.
 Alternatively, you may simply copy the qbe binary manually.
+
+make
+Bsp. zum anzeigen von Assembly. ./tools/genasm test/echo.ssa /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2/result/echo.s
+
+Canaries an: 
+cd /Users/lucadoll/Desktop/LBS-Compiler/qbe-1.2
+make clean
+make CANARY=1 qbe
+cp -f qbe result/qbe.canary
+
+Canaries aus: 
+make clean
+make CANARY=0 qbe
+cp -f qbe result/qbe.no_canary
+
+Kompilieren (direkter Vergleich):
+./result/qbe.canary -o result/stack_canary_attack.canary.s demo/stack_canary_attack.ssa
+./result/qbe.no_canary -o result/stack_canary_attack.no_canary.s demo/stack_canary_attack.ssa
+

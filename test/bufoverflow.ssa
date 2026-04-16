@@ -1,0 +1,44 @@
+# Buffer-overflow demo for the ARM64 backend.
+# The function `smash` allocates a tiny stack buffer and then computes
+# out-of-bounds addresses from that buffer.
+#
+# Without stack canaries, the overwritten return address redirects control
+# flow into `hacked`.
+# With stack canaries enabled, the epilogue should trap before returning.
+
+data $msg = align 1 { b "buffer overflow succeeded", b 0 }
+data $slot = align 8 { l 0 }
+
+function $hacked() {
+@start
+	call $puts(l $msg)
+	call $exit(w 0)
+	ret
+}
+
+function $smash() {
+@start
+	%buf =l alloc8 8
+	%slot =l copy 8
+	%twoslots =l mul 2, %slot
+	%ret_off =l sub 0, %twoslots
+	%can_off =l add %ret_off, %slot
+	%ret =l add %buf, %ret_off
+	%can =l add %buf, %can_off
+
+	storel %ret, $slot
+	%retp =l loadl $slot
+	storel $hacked, %retp
+
+	storel %can, $slot
+	%canp =l loadl $slot
+	storel 0, %canp
+	ret
+}
+
+export
+function w $main() {
+@start
+	call $smash()
+	ret 1
+}

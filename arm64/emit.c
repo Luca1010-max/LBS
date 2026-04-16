@@ -9,6 +9,16 @@ struct E {
 	uint padding;
 };
 
+#ifndef ARM64_STACK_CANARY
+#define ARM64_STACK_CANARY 1
+#endif
+
+#if ARM64_STACK_CANARY
+static char canaryinit[] = "__qbe_stack_canary_init";
+static char canarycheck[] = "__qbe_stack_canary_check";
+static char canaryfail[] = "__qbe_stack_canary_fail";
+#endif
+
 #define CMP(X) \
 	X(Cieq,       "eq") \
 	X(Cine,       "ne") \
@@ -151,7 +161,7 @@ slot(Ref r, E *e)
 		else
 			return 16 + e->frame - (s+2);
 	} else
-		return 16 + e->padding + 4 * s;
+		return 16 + 8 * ARM64_STACK_CANARY + e->padding + 4 * s;
 }
 
 static void
@@ -324,6 +334,119 @@ loadcon(Con *c, int r, int k, E *e)
 	}
 }
 
+#if ARM64_STACK_CANARY
+static void
+emitimm64(FILE *f, char *rn, uint64_t n)
+{
+	int sh;
+	uint part;
+
+	part = n & 0xffff;
+	fprintf(f, "\tmovz\t%s, #0x%x\n", rn, part);
+	for (sh=16; sh<64; sh+=16) {
+		part = (n >> sh) & 0xffff;
+		if (part != 0)
+			fprintf(f, "\tmovk\t%s, #0x%x, lsl #%d\n",
+				rn, part, sh);
+	}
+}
+#endif
+
+static uint64_t
+fncanary(Fn *fn)
+{
+	uint64_t h;
+	char *p;
+
+	h = UINT64_C(0xcbf29ce484222325);
+	for (p=fn->name; *p; p++) {
+		h ^= (uchar)*p;
+		h *= UINT64_C(0x100000001b3);
+	}
+	h ^= (uint64_t)fn->slot << 17;
+	h ^= (uint64_t)fn->nblk << 41;
+	h ^= UINT64_C(0x9ae16a3b2f90404f);
+	h |= UINT64_C(0x0101010101010101);
+	return h;
+}
+
+static void
+emitcanaryset(E *e, uint64_t canary)
+{
+#if ARM64_STACK_CANARY
+	fputs("\tadd\tx16, x29, #16\n", e->f);
+	emitimm64(e->f, "x17", canary);
+	fprintf(e->f, "\tbl\t%s%s\n", T.assym, canaryinit);
+#else
+	(void)e;
+	(void)canary;
+#endif
+}
+
+static void
+emitcanarycheck(E *e, uint64_t canary)
+{
+#if ARM64_STACK_CANARY
+	fputs("\tadd\tx16, x29, #16\n", e->f);
+	emitimm64(e->f, "x17", canary);
+	fprintf(e->f, "\tbl\t%s%s\n", T.assym, canarycheck);
+#else
+	(void)e;
+	(void)canary;
+#endif
+}
+
+static void
+emitcanaryhelpers(FILE *f)
+{
+#if ARM64_STACK_CANARY
+	Lnk lnk;
+
+	memset(&lnk, 0, sizeof lnk);
+	lnk.align = 4;
+
+	emitfnlnk(canaryinit, &lnk, f);
+	fputs(
+		"\tstr\tx17, [x16]\n"
+		"\tret\n",
+		f
+	);
+	if (!T.apple)
+		elf_emitfnfin(canaryinit, f);
+	fputs("/* end function __qbe_stack_canary_init */\n\n", f);
+
+	emitfnlnk(canarycheck, &lnk, f);
+	fprintf(f,
+		"\tldr\tx15, [x16]\n"
+		"\tcmp\tx15, x17\n"
+		"\tb.ne\t%s%s\n"
+		"\tret\n",
+		T.assym, canaryfail
+	);
+	if (!T.apple)
+		elf_emitfnfin(canarycheck, f);
+	fputs("/* end function __qbe_stack_canary_check */\n\n", f);
+
+	emitfnlnk(canaryfail, &lnk, f);
+	fputs("\tbrk\t#1001\n", f);
+	if (!T.apple)
+		elf_emitfnfin(canaryfail, f);
+	fputs("/* end function __qbe_stack_canary_fail */\n\n", f);
+#else
+	(void)f;
+#endif
+}
+
+void
+arm64_emitfin(FILE *f)
+{
+	emitcanaryhelpers(f);
+	if (T.apple)
+		macho_emitfin(f);
+	else
+		elf_emitfin(f);
+}
+
 static void emitins(Ins *, E *);
 
 static void
@@ -461,10 +584,10 @@ framelayout(E *e)
 
 	for (o=0, r=arm64_rclob; *r>=0; r++)
 		o += 1 & (e->fn->reg >> *r);
-	f = e->fn->slot;
+	f = e->fn->slot + 2 * ARM64_STACK_CANARY;
 	f = (f + 3) & -4;
 	o += o & 1;
-	e->padding = 4*(f-e->fn->slot);
+	e->padding = 4*(f-(e->fn->slot + 2 * ARM64_STACK_CANARY));
 	e->frame = 4*f + 8*o;
 }
 
@@ -487,7 +610,9 @@ framelayout(E *e)
   |   locals    |  |
   |    ...      |  |
   +-------------+  |
-  | e->padding  |  v
+  | e->padding  |  |
+  +-------------+  |
+  |   canary    |  v   (only if ARM64_STACK_CANARY=1)
   +-------------+
   |  saved x29  |
   |  saved x30  |
@@ -504,6 +629,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 	#undef X
 	};
 	static int id0;
+	uint64_t canary;
 	int s, n, c, lbl, *r;
 	uint64_t o;
 	Blk *b, *t;
@@ -515,6 +641,7 @@ arm64_emitfn(Fn *fn, FILE *out)
 		e->fn->lnk.align = 4;
 	emitfnlnk(e->fn->name, &e->fn->lnk, e->f);
 	framelayout(e);
+	canary = fncanary(e->fn);
 
 	if (e->fn->vararg && !T.apple) {
 		for (n=7; n>=0; n--)
@@ -550,7 +677,8 @@ arm64_emitfn(Fn *fn, FILE *out)
 			e->frame & 0xFFFF, e->frame >> 16
 		);
 	fputs("\tmov\tx29, sp\n", e->f);
-	s = (e->frame - e->padding) / 4;
+	emitcanaryset(e, canary);
+	s = (e->frame - e->padding) / 4 - 2 * ARM64_STACK_CANARY;
 	for (r=arm64_rclob; *r>=0; r++)
 		if (e->fn->reg & BIT(*r)) {
 			s -= 2;
@@ -570,7 +698,8 @@ arm64_emitfn(Fn *fn, FILE *out)
 			fprintf(e->f, "\tbrk\t#1000\n");
 			break;
 		case Jret0:
-			s = (e->frame - e->padding) / 4;
+			emitcanarycheck(e, canary);
+			s = (e->frame - e->padding) / 4 - 2 * ARM64_STACK_CANARY;
 			for (r=arm64_rclob; *r>=0; r++)
 				if (e->fn->reg & BIT(*r)) {
 					s -= 2;

@@ -44,7 +44,7 @@ arm64_memargs(int op)
 Target T_arm64 = {
 	.name = "arm64",
 	.abi0 = elimsb,
-	.emitfin = elf_emitfin,
+	.emitfin = arm64_emitfin,
 	.asloc = ".L",
 	ARM64_COMMON
 };
@@ -53,7 +53,7 @@ Target T_arm64_apple = {
 	.name = "arm64_apple",
 	.apple = 1,
 	.abi0 = apple_extsb,
-	.emitfin = macho_emitfin,
+	.emitfin = arm64_emitfin,
 	.asloc = "L",
 	.assym = "_",
 	ARM64_COMMON

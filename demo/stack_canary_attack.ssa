@@ -1,0 +1,38 @@
+# Stack-smashing demo for the ARM64 backend.
+# `smash` corrupts the activation record relative to a local stack buffer:
+#   buf-16 -> saved return address
+#   buf-8  -> saved frame pointer on the old backend, canary on the hardened one
+#
+# Without stack canaries, `smash` returns into `hacked`.
+# With stack canaries, the epilogue detects the modified canary and traps first.
+
+data $msg = align 1 { b "control flow hijacked", b 0 }
+data $slot = align 8 { l 0 }
+
+function $hacked() {
+@start
+	call $puts(l $msg)
+	call $exit(w 0)
+	ret
+}
+
+function $smash() {
+@start
+	%buf =l alloc8 8
+	%ret =l add %buf, -16
+	%can =l add %buf, -8
+	storel %ret, $slot
+	%retp =l loadl $slot
+	storel $hacked, %retp
+	storel %can, $slot
+	%canp =l loadl $slot
+	storel 0, %canp
+	ret
+}
+
+export
+function w $main() {
+@start
+	call $smash()
+	ret 1
+}

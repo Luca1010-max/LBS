@@ -36,3 +36,4 @@ void arm64_isel(Fn *);
 
 /* emit.c */
 void arm64_emitfn(Fn *, FILE *);
+void arm64_emitfin(FILE *);
